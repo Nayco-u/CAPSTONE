@@ -84,8 +84,3 @@ void loop() {
   receiveCANFrame();
   delay(1000);  // Esperar 1 segundo entre mensajes
 }
-
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
-}

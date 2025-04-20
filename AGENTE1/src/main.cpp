@@ -44,6 +44,13 @@ void sendCANFrame() {
   }
 }
 
+void checkCANStatus() {
+  twai_status_info_t status;
+  twai_get_status_info(&status);
+  Serial.printf("Estado del bus: %d, errores TX: %d, RX: %d, mensajes TX: %d\n",
+                status.state, status.tx_error_counter, status.rx_error_counter, status.msgs_to_tx);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -52,5 +59,6 @@ void setup() {
 
 void loop() {
   sendCANFrame();
+  checkCANStatus();
   delay(2000);
 }

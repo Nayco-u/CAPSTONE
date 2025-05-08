@@ -50,6 +50,6 @@ void setup() {
 
 void loop() {
   receiveCANFrame();
-  checkCANStatus();
+  // checkCANStatus();
   delay(100);  // Pequeño delay para evitar saturar el loop
 }

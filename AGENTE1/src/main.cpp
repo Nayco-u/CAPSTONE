@@ -59,6 +59,6 @@ void setup() {
 
 void loop() {
   sendCANFrame();
-  checkCANStatus();
+  // checkCANStatus();
   delay(2000);
 }

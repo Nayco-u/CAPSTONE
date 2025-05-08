@@ -1,4 +1,9 @@
 #include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include "driver/ledc.h"
 #include "driver/twai.h"
 
 // Pines para CAN
@@ -6,11 +11,28 @@
 #define CAN_RX_PIN GPIO_NUM_4
 
 // Variables globales compartidas
-float voltage = 0.0;
-float current = 0.0;
-float soc = 0.0;
-float barra_voltage = 0.0;
+int16_t v_cell1 = 0;       // Voltaje celda 1 en mV
+int16_t v_cell2 = 0;       // Voltaje celda 2 en mV
+int16_t v_cell3 = 0;       // Voltaje celda 3 en mV
+int16_t v_cell4 = 0;       // Voltaje celda 4 en mV
+int16_t i_battery = 0;     // Corriente de la batería en mA
+int16_t i_converter = 0;   // Corriente del convertidor en mA
+int16_t v_barra = 0;       // Voltaje de la barra en mV
+int16_t soc_general = 0;   // SOC general del agente (en mV)
+int16_t soc_promedio = 0;  // SOC promedio recibido del maestro
 SemaphoreHandle_t dataMutex;
+
+// --- Configuración de PWM ---
+const int PWM_PIN = 27;
+const ledc_channel_t PWM_CHANNEL = LEDC_CHANNEL_0;
+const ledc_timer_t PWM_TIMER = LEDC_TIMER_0;
+const ledc_timer_bit_t PWM_RESOLUTION = LEDC_TIMER_10_BIT;
+int duty = 512;
+int freq = 20000;
+
+// --- ADS1115 ---
+Adafruit_ADS1115 ads1(0x48); // Primer sensor con dirección 0x48
+Adafruit_ADS1115 ads2(0x49); // Segundo sensor con dirección 0x49
 
 // Prototipos de funciones
 // Tareas en Núcleo 0
@@ -23,19 +45,27 @@ void CAN_TX_Task(void *pvParameters) {
       message.flags = TWAI_MSG_FLAG_NONE;
       message.data_length_code = 8;
 
-      uint16_t soc_val = soc * 100; // Porcentaje a centésimas
-      uint16_t v_cell = voltage * 1000; // Volts a mV
-      uint16_t i_out = current * 1000;  // Amps a mA
-      uint16_t v_barra = barra_voltage * 1000; // Volts a mV
+      // Enviar los valores de las celdas y la barra
+      message.data[0] = v_cell1 & 0xFF;
+      message.data[1] = v_cell1 >> 8;
+      message.data[2] = v_cell2 & 0xFF;
+      message.data[3] = v_cell2 >> 8;
+      message.data[4] = v_cell3 & 0xFF;
+      message.data[5] = v_cell3 >> 8;
+      message.data[6] = v_cell4 & 0xFF;
+      message.data[7] = v_cell4 >> 8;
 
-      message.data[0] = soc_val & 0xFF;
-      message.data[1] = soc_val >> 8;
-      message.data[2] = v_cell & 0xFF;
-      message.data[3] = v_cell >> 8;
-      message.data[4] = i_out & 0xFF;
-      message.data[5] = i_out >> 8;
-      message.data[6] = v_barra & 0xFF;
-      message.data[7] = v_barra >> 8;
+      twai_transmit(&message, pdMS_TO_TICKS(1000));
+
+      // Enviar los valores de corriente, barra y SOC general
+      message.data[0] = i_battery & 0xFF;
+      message.data[1] = i_battery >> 8;
+      message.data[2] = i_converter & 0xFF;
+      message.data[3] = i_converter >> 8;
+      message.data[4] = v_barra & 0xFF;
+      message.data[5] = v_barra >> 8;
+      message.data[6] = soc_general & 0xFF;
+      message.data[7] = soc_general >> 8;
 
       twai_transmit(&message, pdMS_TO_TICKS(1000));
 
@@ -49,15 +79,13 @@ void CAN_RX_Task(void *pvParameters) {
   while (true) {
     twai_message_t message;
     if (twai_receive(&message, pdMS_TO_TICKS(100)) == ESP_OK) {
-      if (message.data_length_code == 8) {
+      if (message.data_length_code == 2) { // SOC promedio recibido
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-          soc = (message.data[0] | (message.data[1] << 8)) / 100.0;
-          voltage = (message.data[2] | (message.data[3] << 8)) / 1000.0;
-          current = (message.data[4] | (message.data[5] << 8)) / 1000.0;
-          barra_voltage = (message.data[6] | (message.data[7] << 8)) / 1000.0;
+          soc_promedio = (message.data[0] | (message.data[1] << 8));
           xSemaphoreGive(dataMutex);
         }
-        Serial.println("Datos CAN actualizados.");
+        Serial.print("SOC promedio recibido: ");
+        Serial.println(soc_promedio);
       }
     }
     delay(10);
@@ -66,16 +94,93 @@ void CAN_RX_Task(void *pvParameters) {
 
 void I2C_Sensor_Task(void *pvParameters) {
   while (true) {
-    // Leer sensores I2C aquí (pendiente)
-    delay(500);
+    // Leer voltajes de las celdas
+    int16_t rawCell1 = ads2.readADC_SingleEnded(0); // Canal 0
+    int16_t rawCell2 = ads2.readADC_SingleEnded(1); // Canal 1
+    int16_t rawCell3 = ads2.readADC_SingleEnded(2); // Canal 0
+    int16_t rawCell4 = ads2.readADC_SingleEnded(3); // Canal 1
+
+    // Leer corrientes
+    int16_t rawBatteryCurrent = ads1.readADC_SingleEnded(0); // Canal 4
+    int16_t rawConverterCurrent = ads1.readADC_SingleEnded(1); // Canal 5
+
+    // Leer voltaje de la barra
+    int16_t rawBarraVoltage = ads1.readADC_SingleEnded(2); // Canal 6
+
+    // Proteger acceso a variables compartidas
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+      v_cell1 = rawCell1 * 1875 / 10; // Conversión a mV
+      v_cell2 = rawCell2 * 1875 / 10; // Conversión a mV
+      v_cell3 = rawCell3 * 1875 / 10; // Conversión a mV
+      v_cell4 = rawCell4 * 1875 / 10; // Conversión a mV
+      i_battery = rawBatteryCurrent * 1875 / 10; // Conversión a mA
+      i_converter = rawConverterCurrent * 1875 / 10; // Conversión a mA
+      v_barra = rawBarraVoltage * 1875 / 10; // Conversión a mV
+
+      // Calcular el SOC general como el voltaje de la celda más baja
+      soc_general = min(min(v_cell1, v_cell2), min(v_cell3, v_cell4));
+
+      xSemaphoreGive(dataMutex);
+    }
+
+    delay(500); // Leer cada 500 ms
   }
+}
+
+// --- Configuración de PWM ---
+void setupPWM() {
+  ledc_timer_config_t timerConfig = {
+    .speed_mode = LEDC_HIGH_SPEED_MODE,
+    .duty_resolution = PWM_RESOLUTION,
+    .timer_num = PWM_TIMER,
+    .freq_hz = freq,
+    .clk_cfg = LEDC_AUTO_CLK
+  };
+  ledc_timer_config(&timerConfig);
+
+  ledc_channel_config_t channelConfig = {
+    .gpio_num = PWM_PIN,
+    .speed_mode = LEDC_HIGH_SPEED_MODE,
+    .channel = PWM_CHANNEL,
+    .timer_sel = PWM_TIMER,
+    .duty = duty,
+    .hpoint = 0
+  };
+  ledc_channel_config(&channelConfig);
 }
 
 // Tareas en Núcleo 1
 void PWM_Control_Task(void *pvParameters) {
+  int16_t setpoint = 2000;       // Voltaje objetivo en mV
+  float Kp = 0.5;               // Ganancia proporcional
+  float Ki = 0.1;               // Ganancia integral
+  float integral = 0.0;
+  float integral_max = 1000.0;  // Límite del integral
+  float dt = 0.5;               // Intervalo de muestreo en segundos
+
   while (true) {
-    // Control PWM conversor DC-DC (pendiente)
-    delay(100);
+    int16_t barraVoltage;
+
+    // Leer el voltaje de la barra
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+      barraVoltage = v_barra;
+      xSemaphoreGive(dataMutex);
+    }
+
+    // Calcular el error basado en el voltaje de la barra
+    int16_t error = setpoint - barraVoltage;
+
+    // Control PI
+    integral += error * dt;
+    integral = constrain(integral, -integral_max, integral_max);  // Limitar integral
+    int16_t output = Kp * error + Ki * integral;
+
+    // Aplicar al PWM
+    duty = constrain(output, 0, 1023);
+    ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
+    ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
+
+    delay(static_cast<int>(dt * 1000));
   }
 }
 
@@ -108,6 +213,25 @@ void setup() {
   } else {
     Serial.println("Error al iniciar CAN.");
   }
+
+  Wire.begin(2, 15); // SDA = 2, SCL = 15
+  setupPWM();
+
+  // Inicializar el primer sensor ADS1115
+  if (!ads1.begin()) {
+    Serial.println("Error al inicializar el ADS1115 (0x48)");
+    while (true);
+  }
+  ads1.setGain(GAIN_TWOTHIRDS); // Configurar rango de ±6.144V
+
+  // Inicializar el segundo sensor ADS1115
+  if (!ads2.begin()) {
+    Serial.println("Error al inicializar el ADS1115 (0x49)");
+    while (true);
+  }
+  ads2.setGain(GAIN_TWOTHIRDS); // Configurar rango de ±6.144V
+
+  Serial.println("Sensores ADS1115 inicializados correctamente.");
 
   // Crear Mutex
   dataMutex = xSemaphoreCreateMutex();

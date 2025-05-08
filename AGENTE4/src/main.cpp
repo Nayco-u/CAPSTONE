@@ -2,9 +2,9 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <FirebaseClient.h>
-#include "driver/twai.h" // Para CAN
-#include <map>
+#include <FirebaseJson.h>
 
+// --- Configuración Wi-Fi y Firebase ---
 #define WIFI_SSID "Seguel Garces"
 #define WIFI_PASSWORD "44699729"
 
@@ -13,7 +13,6 @@
 #define USER_EMAIL "capstone.potencia.2025@gmail.com"
 #define USER_PASS "potencia2025"
 
-// Firebase
 UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
 FirebaseApp app;
 WiFiClientSecure ssl_client;
@@ -21,104 +20,92 @@ using AsyncClient = AsyncClientClass;
 AsyncClient aClient(ssl_client);
 RealtimeDatabase Database;
 
-// Variables globales
-unsigned long lastSendTime = 0;
-const unsigned long sendInterval = 1000; // 1 segundo
-String uid, databasePath;
-std::map<int, float> agentData; // id → valor
-std::map<int, unsigned long> lastSeen; // id → timestamp
-
-SemaphoreHandle_t dataMutex;
-
-// Inicializa TWAI
-void initCAN() {
-  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_5, GPIO_NUM_4, TWAI_MODE_NORMAL);
-  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
-  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
-  twai_driver_install(&g_config, &t_config, &f_config);
-  twai_start();
-}
-
-// Recibe datos por CAN
-void TaskCANReceive(void *pvParameters) {
-  while (1) {
-    twai_message_t message;
-    if (twai_receive(&message, pdMS_TO_TICKS(10)) == ESP_OK) {
-      int id = message.identifier;
-      float value;
-      memcpy(&value, message.data, sizeof(float));
-
-      xSemaphoreTake(dataMutex, portMAX_DELAY);
-      agentData[id] = value;
-      lastSeen[id] = millis();
-      xSemaphoreGive(dataMutex);
-    }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-  }
-}
-
-// Envia promedio por CAN
-void TaskCANSender(void *pvParameters) {
-  while (1) {
-    xSemaphoreTake(dataMutex, portMAX_DELAY);
-    float sum = 0;
-    int count = 0;
-    for (auto &[id, val] : agentData) {
-      if (millis() - lastSeen[id] < 1500) {
-        sum += val;
-        count++;
-      }
-    }
-    float avg = (count > 0) ? sum / count : 0.0;
-    xSemaphoreGive(dataMutex);
-
-    // Enviar por CAN
-    twai_message_t tx_msg = {};
-    tx_msg.identifier = 100; // ID para el promedio
-    tx_msg.data_length_code = sizeof(float);
-    memcpy(tx_msg.data, &avg, sizeof(float));
-    twai_transmit(&tx_msg, pdMS_TO_TICKS(10));
-
-    vTaskDelay(sendInterval / portTICK_PERIOD_MS);
-  }
-}
-
-// Envia datos a Firebase
-void TaskFirebase(void *pvParameters) {
-  while (1) {
-    if (app.ready()) {
-      xSemaphoreTake(dataMutex, portMAX_DELAY);
-      for (auto &[id, val] : agentData) {
-        if (millis() - lastSeen[id] < 1500) {
-          String path = "Agents/" + String(id);
-          Database.set<float>(aClient, path, val, [](AsyncResult &r) {}, "upload");
-        }
-      }
-      xSemaphoreGive(dataMutex);
-    }
-    vTaskDelay(sendInterval / portTICK_PERIOD_MS);
-  }
-}
-
-void setup() {
-  Serial.begin(115200);
+// --- Setup Firebase ---
+void setupFirebase() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) delay(300);
-  ssl_client.setInsecure();
+  Serial.print("Conectando a Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println(" conectado.");
 
+  ssl_client.setInsecure();
   initializeApp(aClient, app, getAuth(user_auth), [](AsyncResult &r) {}, "auth");
   app.getApp<RealtimeDatabase>(Database);
   Database.url(DATABASE_URL);
+}
 
-  initCAN();
-  dataMutex = xSemaphoreCreateMutex();
+// --- Envío simulado de datos ---
+void TaskFirebase(void *pvParameters) {
+  unsigned long t1 = 0, t2 = 0, t3 = 0;
 
-  xTaskCreatePinnedToCore(TaskCANReceive, "CAN_RX", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(TaskCANSender, "CAN_TX", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(TaskFirebase, "Firebase", 8192, NULL, 1, NULL, 0);
+  while (true) {
+    if (app.ready()) {
+      unsigned long now = millis();
+      unsigned long ts = time(nullptr); // requiere NTP o tiempo confiable
+
+      if (now - t1 >= 500) {
+        FirebaseJson json;
+        json.set("soc", 73.0);
+        json.set("barra", 5.01);
+        json.set("iout", 1.25);
+        json.set("celda_1", 3.80);
+        json.set("celda_2", 3.81);
+        json.set("celda_3", 3.79);
+        json.set("celda_4", 3.82);
+        json.set("timestamp", ts);
+        String jsonStr;
+        json.toString(jsonStr, true); // Serializa FirebaseJson a String
+        Database.set(aClient, "Agents/1", jsonStr, [](AsyncResult &r) {}, "agent1");
+        t1 = now;
+      }
+
+      if (now - t2 >= 1000) {
+        FirebaseJson json;
+        json.set("soc", 56.0);
+        json.set("barra", 4.96);
+        json.set("iout", 0.95);
+        json.set("celda_1", 3.70);
+        json.set("celda_2", 3.69);
+        json.set("celda_3", 3.72);
+        json.set("celda_4", 3.68);
+        json.set("timestamp", ts);
+        String jsonStr;
+        json.toString(jsonStr, true); // Serializa FirebaseJson a String
+        Database.set(aClient, "Agents/2", jsonStr, [](AsyncResult &r) {}, "agent2");
+        t2 = now;
+      }
+
+      if (now - t3 >= 2000) {
+        FirebaseJson json;
+        json.set("soc", 89.0);
+        json.set("barra", 5.03);
+        json.set("iout", 1.45);
+        json.set("celda_1", 3.90);
+        json.set("celda_2", 3.91);
+        json.set("celda_3", 3.88);
+        json.set("celda_4", 3.92);
+        json.set("timestamp", ts);
+        String jsonStr;
+        json.toString(jsonStr, true); // Serializa FirebaseJson a String
+        Database.set(aClient, "Agents/3", jsonStr, [](AsyncResult &r) {}, "agent3");
+        t3 = now;
+      }
+    }
+
+    app.loop(); // Mantener conexión con Firebase
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+// --- Setup principal ---
+void setup() {
+  Serial.begin(115200);
+  setupFirebase();
+  xTaskCreatePinnedToCore(TaskFirebase, "FirebaseTask", 8192, NULL, 1, NULL, 1);
 }
 
 void loop() {
-  app.loop(); // Firebase loop
+  app.loop();
 }

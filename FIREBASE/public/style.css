@@ -1,0 +1,39 @@
+body {
+    margin: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f4f4f4;
+    color: #333;
+  }
+  
+  .topnav {
+    background-color: #333;
+    padding: 1rem;
+    color: #fff;
+    text-align: center;
+  }
+  
+  .content-sign-in {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 1rem;
+    gap: 1rem;
+  }
+  
+  .card.agent-card {
+    background-color: white;
+    border-radius: 10px;
+    box-shadow: 0px 2px 10px rgba(0,0,0,0.15);
+    padding: 1rem;
+    width: 250px;
+    transition: opacity 0.3s ease;
+  }
+  
+  .card p {
+    margin: 0.3rem 0;
+  }
+  
+  .hidden {
+    display: none;
+  }
+  

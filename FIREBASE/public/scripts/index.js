@@ -2,8 +2,8 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebas
 import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
 
 const firebaseConfig = {
-  apiKey: "TU_API_KEY",
-  authDomain: "TU_DOMINIO.firebaseapp.com",
+  apiKey: "AIzaSyAVt_Gn_2jqQYufbcg4GzsJ6Q6MoozBGYU",
+  authDomain: "https://capstone-b36f2.firebaseapp.com/",
   databaseURL: "https://capstone-b36f2-default-rtdb.firebaseio.com/",
   projectId: "capstone-b36f2",
   storageBucket: "capstone-b36f2.appspot.com",
@@ -11,15 +11,21 @@ const firebaseConfig = {
   appId: "XXXXXXX"
 };
 
+// Inicializar Firebase
+console.log("Inicializando Firebase...");
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 const agentsRef = ref(db, 'Agents');
 
+// Referencia al contenedor dinámico
 const agentContainer = document.getElementById('content-sign-in');
-const agentElements = {};
-const lastSeen = {};
+if (!agentContainer) {
+  console.error("No se encontró el contenedor dinámico con ID 'content-sign-in'.");
+}
 
+// Función para crear tarjetas de agentes
 function createAgentCard(id) {
+  console.log(`Creando tarjeta para el agente ${id}`);
   const div = document.createElement("div");
   div.className = "card agent-card";
   div.id = `agent-${id}`;
@@ -34,20 +40,22 @@ function createAgentCard(id) {
     <p>Celda 4: <span id="v4-${id}"></span> V</p>
   `;
   agentContainer.appendChild(div);
-  agentElements[id] = div;
 }
 
+// Escuchar cambios en la base de datos
 onValue(agentsRef, (snapshot) => {
+  console.log("Datos recibidos de Firebase");
   const data = snapshot.val();
-  if (!data) return;
-
-  const now = Date.now();
+  if (!data) {
+    console.warn("No se encontraron datos en la base de datos.");
+    return;
+  }
 
   Object.keys(data).forEach(id => {
     const agent = data[id];
-    lastSeen[id] = now;
-
-    if (!agentElements[id]) createAgentCard(id);
+    if (!document.getElementById(`agent-${id}`)) {
+      createAgentCard(id);
+    }
 
     document.getElementById(`soc-${id}`).innerText = agent.soc.toFixed(2);
     document.getElementById(`barra-${id}`).innerText = agent.barra.toFixed(2);
@@ -56,19 +64,5 @@ onValue(agentsRef, (snapshot) => {
     document.getElementById(`v2-${id}`).innerText = agent.celda_2.toFixed(2);
     document.getElementById(`v3-${id}`).innerText = agent.celda_3.toFixed(2);
     document.getElementById(`v4-${id}`).innerText = agent.celda_4.toFixed(2);
-
-    agentElements[id].style.display = "block";
   });
 });
-
-// Verifica inactividad cada segundo
-setInterval(() => {
-  const now = Date.now();
-  Object.keys(lastSeen).forEach(id => {
-    if (now - lastSeen[id] < 1000) {
-      if (agentElements[id]) {
-        agentElements[id].style.display = "none";
-      }
-    }
-  });
-}, 1000);

@@ -22,9 +22,18 @@ SemaphoreHandle_t dataMutex;
 const int PWM_PIN = 27;
 const ledc_channel_t PWM_CHANNEL = LEDC_CHANNEL_0;
 const ledc_timer_t PWM_TIMER = LEDC_TIMER_0;
-const ledc_timer_bit_t PWM_RESOLUTION = LEDC_TIMER_10_BIT;
-int duty = 512;
+const ledc_timer_bit_t PWM_RESOLUTION = LEDC_TIMER_10_BIT; // 10 bits = 1024 niveles
+int duty = 0;
 int freq = 20000;
+const int DUTY_MAX = 1023;
+const int DUTY_MIN = 0;
+
+// --- Control PI ---
+const float V_REF = 5;     // Voltaje de referencia
+const float KP = 190.0;      // Ganancia proporcional
+const float KI = 20.0;       // Ganancia integral
+float integral_error = 0.0;
+unsigned long last_time = 0;
 
 // --- ADS1115 ---
 Adafruit_ADS1115 ads1; // Primer sensor con dirección 0x48
@@ -101,12 +110,6 @@ void I2C_Sensor_Task(void *pvParameters) {
       v_cell1 = rawCell1; // Conversión a mV
       v_barra = rawBarra; // Conversión a mV
 
-      Serial.print("Voltaje celda 1: ");
-      Serial.print(v_cell1);
-      Serial.print(" mV, Voltaje barra: ");
-      Serial.print(v_barra);
-      Serial.println(" mV");
-
       xSemaphoreGive(dataMutex);
     }
 
@@ -116,37 +119,40 @@ void I2C_Sensor_Task(void *pvParameters) {
 
 // Tareas en Núcleo 1
 void PWM_Control_Task(void *pvParameters) {
-  int16_t setpoint = 2000;      // Voltaje objetivo en mV
-  int16_t barraVoltage = 0;     // Voltaje de la barra leído
-  float Kp = 0.5;               // Ganancia proporcional
-  float Ki = 0.1;               // Ganancia integral
-  float integral = 0.0;
-  float integral_max = 1000.0;  // Límite del integral
-  float dt = 0.1;               // Intervalo de muestreo en segundos
+  float voltaje = 0.0;
+  unsigned long last_time = millis();
 
   while (true) {
+    // Leer el voltaje de la barra (en mV)
+    voltaje = v_barra * 2 / 5330.0; // Convertir a voltios
 
 
-    // Leer el voltaje de la barra
-    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-      barraVoltage = v_barra;
-      xSemaphoreGive(dataMutex);
-    }
+    // --- Controlador PI ---
+    float error = V_REF - voltaje;
+    unsigned long current_time = millis();
+    float dt = (current_time - last_time) / 1000.0;
+    last_time = current_time;
 
-    // Calcular el error basado en el voltaje de la barra
-    int16_t error = setpoint - barraVoltage;
+    integral_error += error * dt;
 
-    // Control PI
-    integral += error * dt;
-    integral = constrain(integral, -integral_max, integral_max);  // Limitar integral
-    int16_t output = Kp * error + Ki * integral;
+    // Calcular señal de control (duty como valor entero entre 0-1023)
+    float control = KP * error + KI * integral_error;
+    duty = constrain((int)control, DUTY_MIN, DUTY_MAX);
 
-    // Aplicar al PWM
-    duty = constrain(output, 0, 1023);
+    // Aplicar PWM
     ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
     ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
 
-    delay(static_cast<int>(dt * 1000));
+      Serial.print("Vmedida: ");
+      Serial.print(voltaje, 3);
+      Serial.print(" V | Error: ");
+      Serial.print(error, 3);
+      Serial.print(" Integral | Error: ");
+      Serial.print(integral_error, 3);
+      Serial.print(" | Duty: ");
+      Serial.println(duty);
+
+    vTaskDelay(pdMS_TO_TICKS(500)); // 100 ms de periodo de control
   }
 }
 
@@ -164,7 +170,7 @@ void MPPT_Control_Task(void *pvParameters) {
   }
 }
 
-// --- Configuración de PWM ---
+// --- Configuración PWM ---
 void setupPWM() {
   ledc_timer_config_t timerConfig = {
     .speed_mode = LEDC_HIGH_SPEED_MODE,
@@ -207,9 +213,9 @@ void setup() {
   dataMutex = xSemaphoreCreateMutex();
 
   // Crear tareas (simulación de paralelismo)
-  xTaskCreatePinnedToCore(CAN_TX_Task, "CAN_TX", 4096, NULL, 1, NULL, 0);  // Núcleo 0
-  xTaskCreatePinnedToCore(CAN_RX_Task, "CAN_RX", 4096, NULL, 1, NULL, 0);  // Núcleo 0
-  xTaskCreatePinnedToCore(I2C_Sensor_Task, "I2C_Sensor", 4096, NULL, 1, NULL, 0);  // Núcleo 0
+  xTaskCreatePinnedToCore(CAN_TX_Task, "CAN_TX", 4096, NULL, 2, NULL, 0);  // Núcleo 0
+  xTaskCreatePinnedToCore(CAN_RX_Task, "CAN_RX", 4096, NULL, 2, NULL, 0);  // Núcleo 0
+  xTaskCreatePinnedToCore(I2C_Sensor_Task, "I2C_Sensor", 4096, NULL, 2, NULL, 0);  // Núcleo 0
 
   xTaskCreatePinnedToCore(PWM_Control_Task, "PWM_Control", 4096, NULL, 1, NULL, 1);  // Núcleo 1
   xTaskCreatePinnedToCore(BMS_Control_Task, "BMS_Control", 4096, NULL, 1, NULL, 1);  // Núcleo 1

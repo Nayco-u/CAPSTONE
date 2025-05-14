@@ -31,13 +31,8 @@ function createAgentCard(id) {
   div.id = `agent-${id}`;
   div.innerHTML = `
     <p><strong>Agente ${id}</strong></p>
-    <p>SOC: <span id="soc-${id}"></span> %</p>
     <p>Barra: <span id="barra-${id}"></span> V</p>
-    <p>Corriente: <span id="iout-${id}"></span> A</p>
-    <p>Celda 1: <span id="v1-${id}"></span> V</p>
-    <p>Celda 2: <span id="v2-${id}"></span> V</p>
-    <p>Celda 3: <span id="v3-${id}"></span> V</p>
-    <p>Celda 4: <span id="v4-${id}"></span> V</p>
+    <p>Celda 1: <span id="celda1-${id}"></span> V</p>
   `;
   agentContainer.appendChild(div);
 }
@@ -57,12 +52,7 @@ onValue(agentsRef, (snapshot) => {
       createAgentCard(id);
     }
 
-    document.getElementById(`soc-${id}`).innerText = agent.soc.toFixed(2);
     document.getElementById(`barra-${id}`).innerText = agent.barra.toFixed(2);
-    document.getElementById(`iout-${id}`).innerText = agent.iout.toFixed(2);
-    document.getElementById(`v1-${id}`).innerText = agent.celda_1.toFixed(2);
-    document.getElementById(`v2-${id}`).innerText = agent.celda_2.toFixed(2);
-    document.getElementById(`v3-${id}`).innerText = agent.celda_3.toFixed(2);
-    document.getElementById(`v4-${id}`).innerText = agent.celda_4.toFixed(2);
+    document.getElementById(`celda1-${id}`).innerText = agent.celda1.toFixed(2);
   });
 });

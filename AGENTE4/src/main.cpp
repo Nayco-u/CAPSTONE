@@ -2,18 +2,22 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <FirebaseClient.h>
-#include <FirebaseJson.h>
-#include <time.h>
+#include "driver/twai.h"
 
-// --- Configuración Wi-Fi y Firebase ---
-#define WIFI_SSID "Seguel Garces"
-#define WIFI_PASSWORD "44699729"
+// CAN bus configuration
+#define CAN_TX_PIN GPIO_NUM_5
+#define CAN_RX_PIN GPIO_NUM_4
+
+// Network and Firebase credentials
+#define WIFI_SSID "Red_Capstone"
+#define WIFI_PASSWORD "kkg9-nbfu-297p"
 
 #define Web_API_KEY "AIzaSyAVt_Gn_2jqQYufbcg4GzsJ6Q6MoozBGYU"
 #define DATABASE_URL "https://capstone-b36f2-default-rtdb.firebaseio.com/"
 #define USER_EMAIL "capstone.potencia.2025@gmail.com"
-#define USER_PASS "potencia2025"
+#define USER_PASS "capstone2025"
 
+// Firebase components
 UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
 FirebaseApp app;
 WiFiClientSecure ssl_client;
@@ -21,151 +25,156 @@ using AsyncClient = AsyncClientClass;
 AsyncClient aClient(ssl_client);
 RealtimeDatabase Database;
 
-// --- Setup Firebase ---
-bool firebaseInitialized = false;
+// Timer variables
+unsigned long lastSendTime = 0;
+const unsigned long sendInterval = 10000; // 10 seconds in milliseconds
 
-void setupFirebase() {
-  if (firebaseInitialized) {
-    return; // Evita inicializar Firebase más de una vez
-  }
+// Task handles
+TaskHandle_t taskAgent1;
+TaskHandle_t taskAgent2;
+TaskHandle_t taskAgent3;
 
+// Estructura para datos de cada agente
+typedef struct {
+  int16_t barra;
+  int16_t celda1;
+  unsigned long timestamp;
+} AgentData;
+
+AgentData agent1 = {0}, agent2 = {0}, agent3 = {0};
+SemaphoreHandle_t dataMutex;
+
+// Function prototypes
+void processData(AsyncResult &aResult);
+
+// Wi-Fi initialization
+void initWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Conectando a Wi-Fi");
+  Serial.print("Connecting to Wi-Fi");
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(300);
   }
-  Serial.println(" conectado.");
-
-  // Configurar NTP
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  Serial.print("Sincronizando tiempo...");
-  while (time(nullptr) < 100000) {
-    Serial.print(".");
-    delay(300);
-  }
-  Serial.println(" tiempo sincronizado.");
-
-  ssl_client.setInsecure();
-  Serial.println("Inicializando Firebase...");
-  
-  // Callback para inicializar Firebase
-  initializeApp(aClient, app, getAuth(user_auth), [](AsyncResult &r) {
-    if (!r.error().message().isEmpty()) {
-      Serial.print("Error al inicializar Firebase: ");
-      Serial.println(r.error().message());
-    } else {
-      Serial.println("Firebase inicializado correctamente.");
-      firebaseInitialized = true; // Marca Firebase como inicializado solo si no hay errores
-    }
-  }, "auth");
-
-  app.getApp<RealtimeDatabase>(Database);
-  Database.url(DATABASE_URL);
+  Serial.println(" connected.");
 }
 
-// --- Tarea para enviar datos del Agente 1 ---
-void TaskAgent1(void *pvParameters) {
+// Tarea para recibir CAN y actualizar variables globales
+void CAN_Receive_Task(void *parameter) {
   while (true) {
-    if (firebaseInitialized) {
-      Serial.println("TaskAgent1: Enviando datos a Firebase...");
-      FirebaseJson json;
-      unsigned long ts = time(nullptr);
-      json.set("soc", 73.0);
-      json.set("barra", 5.01);
-      json.set("iout", 1.25);
-      json.set("celda_1", 3.80);
-      json.set("celda_2", 3.81);
-      json.set("celda_3", 3.79);
-      json.set("celda_4", 3.82);
-      String jsonStr;
-      json.toString(jsonStr, true);
-      Database.set(aClient, "Agents/1", jsonStr, [](AsyncResult &r) {
-        if (!r.error().message().isEmpty()) {
-          Serial.print("TaskAgent1: Error al enviar datos: ");
-          Serial.println(r.error().message());
-        } else {
-          Serial.println("TaskAgent1: Datos enviados correctamente.");
+    twai_message_t message;
+    if (twai_receive(&message, pdMS_TO_TICKS(100)) == ESP_OK) {
+      if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+        unsigned long now = millis() / 1000;
+        switch (message.identifier) {
+          case 0x201: // Agente1
+            agent1.celda1 = message.data[0] | (message.data[1] << 8);
+            agent1.barra = message.data[2] | (message.data[3] << 8);
+            agent1.timestamp = now;
+            break;
+          case 0x202: // Agente2
+            agent2.celda1 = message.data[0] | (message.data[1] << 8);
+            agent2.barra = message.data[2] | (message.data[3] << 8);
+            agent2.timestamp = now;
+            break;
+          case 0x203: // Agente3
+            agent3.celda1 = message.data[0] | (message.data[1] << 8);
+            agent3.barra = message.data[2] | (message.data[3] << 8);
+            agent3.timestamp = now;
+            break;
         }
-      }, "agent1");
-    } else {
-      Serial.println("TaskAgent1: Firebase no inicializado.");
+        xSemaphoreGive(dataMutex);
+      }
     }
-    vTaskDelay(1000 / portTICK_PERIOD_MS); // Actualiza cada 1 segundo
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
-// --- Tarea para enviar datos del Agente 2 ---
-void TaskAgent2(void *pvParameters) {
+// Tarea para actualizar Firebase cada segundo, solo si hubo actualización reciente por CAN
+void Firebase_Update_Task(void *parameter) {
+  JsonWriter writer;
+  object_t jsonData, objBarra, objCelda, objTimestamp;
   while (true) {
-    if (firebaseInitialized) {
-      Serial.println("TaskAgent2: Enviando datos a Firebase...");
-      FirebaseJson json;
-      unsigned long ts = time(nullptr);
-      json.set("soc", 56.0);
-      json.set("barra", 4.96);
-      json.set("iout", 0.95);
-      json.set("celda_1", 3.70);
-      json.set("celda_2", 3.69);
-      json.set("celda_3", 3.72);
-      json.set("celda_4", 3.68);
-      String jsonStr;
-      json.toString(jsonStr, true);
-      Database.set(aClient, "Agents/2", jsonStr, [](AsyncResult &r) {
-        if (!r.error().message().isEmpty()) {
-          Serial.print("TaskAgent2: Error al enviar datos: ");
-          Serial.println(r.error().message());
-        } else {
-          Serial.println("TaskAgent2: Datos enviados correctamente.");
+    unsigned long now = millis() / 1000;
+    if (app.ready()) {
+      if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+        // Agente 1
+        if (now - agent1.timestamp <= 3 && app.ready()) {
+          writer.create(objBarra, "/barra", agent1.barra / 5330.0);
+          writer.create(objCelda, "/celda1", agent1.celda1 / 5330.0);
+          writer.create(objTimestamp, "/timestamp", agent1.timestamp);
+          writer.join(jsonData, 3, objBarra, objCelda, objTimestamp);
+          Database.set<object_t>(aClient, "/Agents/Agent1", jsonData, processData, "RTDB_Agent1_JSON");
         }
-      }, "agent2");
-    } else {
-      Serial.println("TaskAgent2: Firebase no inicializado.");
+        // Agente 2
+        if (now - agent2.timestamp <= 3 && app.ready()) {
+          writer.create(objBarra, "/barra", agent2.barra / 5330.0);
+          writer.create(objCelda, "/celda1", agent2.celda1 / 5330.0);
+          writer.create(objTimestamp, "/timestamp", agent2.timestamp);
+          writer.join(jsonData, 3, objBarra, objCelda, objTimestamp);
+          Database.set<object_t>(aClient, "/Agents/Agent2", jsonData, processData, "RTDB_Agent2_JSON");
+        }
+        // Agente 3
+        if (now - agent3.timestamp <= 3 && app.ready()) {
+          writer.create(objBarra, "/barra", agent3.barra / 5330.0);
+          writer.create(objCelda, "/celda1", agent3.celda1 / 5330.0);
+          writer.create(objTimestamp, "/timestamp", agent3.timestamp);
+          writer.join(jsonData, 3, objBarra, objCelda, objTimestamp);
+          Database.set<object_t>(aClient, "/Agents/Agent3", jsonData, processData, "RTDB_Agent3_JSON");
+        }
+        xSemaphoreGive(dataMutex);
+      }
     }
-    vTaskDelay(3000 / portTICK_PERIOD_MS); // Actualiza cada 3 segundos
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
-// --- Tarea para enviar datos del Agente 3 ---
-void TaskAgent3(void *pvParameters) {
-  while (true) {
-    if (firebaseInitialized) {
-      Serial.println("TaskAgent3: Enviando datos a Firebase...");
-      FirebaseJson json;
-      unsigned long ts = time(nullptr);
-      json.set("soc", 89.0);
-      json.set("barra", 5.03);
-      json.set("iout", 1.45);
-      json.set("celda_1", 3.90);
-      json.set("celda_2", 3.91);
-      json.set("celda_3", 3.88);
-      json.set("celda_4", 3.92);
-      String jsonStr;
-      json.toString(jsonStr, true);
-      Database.set(aClient, "Agents/3", jsonStr, [](AsyncResult &r) {
-        if (!r.error().message().isEmpty()) {
-          Serial.print("TaskAgent3: Error al enviar datos: ");
-          Serial.println(r.error().message());
-        } else {
-          Serial.println("TaskAgent3: Datos enviados correctamente.");
-        }
-      }, "agent3");
-    } else {
-      Serial.println("TaskAgent3: Firebase no inicializado.");
-    }
-    vTaskDelay(5000 / portTICK_PERIOD_MS); // Actualiza cada 5 segundos
-  }
-}
-
-// --- Setup principal ---
 void setup() {
   Serial.begin(115200);
-  setupFirebase();
-  xTaskCreatePinnedToCore(TaskAgent1, "Agent1Task", 8192, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(TaskAgent2, "Agent2Task", 8192, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(TaskAgent3, "Agent3Task", 8192, NULL, 1, NULL, 1);
+
+  // Connect to Wi-Fi
+  initWiFi();
+
+  // Configure SSL client
+  ssl_client.setInsecure();
+
+  // Initialize Firebase
+  initializeApp(aClient, app, getAuth(user_auth), processData, "🔐 authTask");
+  app.getApp<RealtimeDatabase>(Database);
+  Database.url(DATABASE_URL);
+
+  // Inicializar CAN
+  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
+  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
+  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+  twai_driver_install(&g_config, &t_config, &f_config);
+  twai_start();
+
+  dataMutex = xSemaphoreCreateMutex();
+
+  // Create tasks for each agent
+  xTaskCreatePinnedToCore(CAN_Receive_Task, "CAN_RX", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(Firebase_Update_Task, "FB_Update", 8192, NULL, 1, NULL, 1);
 }
 
 void loop() {
-  // El loop principal queda vacío, ya que las tareas se ejecutan en FreeRTOS
+  // Maintain authentication and async tasks
+  app.loop();
+}
+
+// Callback to handle Firebase responses
+void processData(AsyncResult &aResult) {
+  if (!aResult.isResult())
+    return;
+
+  if (aResult.isEvent())
+    Firebase.printf("Event task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.eventLog().message().c_str(), aResult.eventLog().code());
+
+  if (aResult.isDebug())
+    Firebase.printf("Debug task: %s, msg: %s\n", aResult.uid().c_str(), aResult.debug().c_str());
+
+  if (aResult.isError())
+    Firebase.printf("Error task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.error().message().c_str(), aResult.error().code());
+
+  if (aResult.available())
+    Firebase.printf("task: %s, payload: %s\n", aResult.uid().c_str(), aResult.c_str());
 }

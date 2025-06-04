@@ -37,6 +37,96 @@ function createAgentCard(id) {
   agentContainer.appendChild(div);
 }
 
+// Cargar Chart.js dinámicamente si no está incluido en el HTML
+if (typeof Chart === "undefined") {
+  const script = document.createElement('script');
+  script.src = "https://cdn.jsdelivr.net/npm/chart.js";
+  script.onload = () => { window.ChartLoaded = true; };
+  document.head.appendChild(script);
+}
+
+// --- Configuración de buffers para los últimos 60 datos ---
+const MAX_POINTS = 60;
+const agentIds = ["Agent1", "Agent2", "Agent3"];
+const barraData = {};
+const celda1Data = {};
+const timeData = {}; // Nuevo: buffer de tiempo por agente
+const lastTime = {}; // Nuevo: último tiempo registrado por agente
+agentIds.forEach(id => {
+  barraData[id] = [];
+  celda1Data[id] = [];
+  timeData[id] = [];
+  lastTime[id] = null;
+});
+
+// --- Inicialización de gráficos ---
+let chartBarra, chartCelda1;
+function initCharts() {
+  const ctxBarra = document.getElementById('chart-barra').getContext('2d');
+  const ctxCelda1 = document.getElementById('chart-celda1').getContext('2d');
+  const colors = ['#ff6384', '#36a2eb', '#4bc0c0'];
+
+  chartBarra = new Chart(ctxBarra, {
+    type: 'line',
+    data: {
+      labels: Array(MAX_POINTS).fill(''),
+      datasets: agentIds.map((id, idx) => ({
+        label: id,
+        data: [],
+        borderColor: colors[idx],
+        backgroundColor: colors[idx] + '33',
+        fill: false,
+        tension: 0.2,
+        spanGaps: true
+      }))
+    },
+    options: {
+      animation: false,
+      responsive: false,
+      plugins: { legend: { display: true } },
+      scales: {
+        y: { title: { display: true, text: 'Voltaje (V)' } },
+        x: { title: { display: true, text: 'Tiempo (s)' } }
+      }
+    }
+  });
+
+  chartCelda1 = new Chart(ctxCelda1, {
+    type: 'line',
+    data: {
+      labels: Array(MAX_POINTS).fill(''),
+      datasets: agentIds.map((id, idx) => ({
+        label: id,
+        data: [],
+        borderColor: colors[idx],
+        backgroundColor: colors[idx] + '33',
+        fill: false,
+        tension: 0.2,
+        spanGaps: true
+      }))
+    },
+    options: {
+      animation: false,
+      responsive: false,
+      plugins: { legend: { display: true } },
+      scales: {
+        y: { title: { display: true, text: 'Voltaje (V)' } },
+        x: { title: { display: true, text: 'Tiempo (s)' } }
+      }
+    }
+  });
+}
+
+// Esperar a que Chart.js esté cargado antes de inicializar los gráficos
+function waitForChartJsAndInit() {
+  if (typeof Chart !== "undefined") {
+    initCharts();
+  } else {
+    setTimeout(waitForChartJsAndInit, 100);
+  }
+}
+waitForChartJsAndInit();
+
 // Escuchar cambios en la base de datos
 onValue(agentsRef, (snapshot) => {
   console.log("Datos recibidos de Firebase");
@@ -46,6 +136,8 @@ onValue(agentsRef, (snapshot) => {
     return;
   }
 
+  let shouldUpdate = false; // Solo actualiza si cambia el tiempo
+
   Object.keys(data).forEach(id => {
     const agent = data[id];
     if (!document.getElementById(`agent-${id}`)) {
@@ -54,5 +146,43 @@ onValue(agentsRef, (snapshot) => {
 
     document.getElementById(`barra-${id}`).innerText = agent.barra.toFixed(2);
     document.getElementById(`celda1-${id}`).innerText = agent.celda1.toFixed(2);
+
+    // --- Actualizar buffers de datos para gráficos ---
+    if (typeof agent.time !== "undefined") {
+      if (lastTime[id] !== agent.time) {
+        shouldUpdate = true;
+        lastTime[id] = agent.time;
+        // Solo agrega si cambia el tiempo
+        if (barraData[id]) {
+          barraData[id].push(agent.barra);
+          if (barraData[id].length > MAX_POINTS) barraData[id].shift();
+        }
+        if (celda1Data[id]) {
+          celda1Data[id].push(agent.celda1);
+          if (celda1Data[id].length > MAX_POINTS) celda1Data[id].shift();
+        }
+        if (timeData[id]) {
+          timeData[id].push(agent.time);
+          if (timeData[id].length > MAX_POINTS) timeData[id].shift();
+        }
+      }
+    }
   });
+
+  // --- Actualizar los gráficos solo si cambia el tiempo ---
+  if (shouldUpdate && chartBarra && chartCelda1) {
+    // Para el eje X, usar el tiempo del primer agente (o el más largo)
+    let mainTime = [];
+    agentIds.forEach(id => {
+      if (timeData[id].length > mainTime.length) mainTime = timeData[id];
+    });
+    chartBarra.data.labels = mainTime;
+    chartCelda1.data.labels = mainTime;
+    agentIds.forEach((id, idx) => {
+      chartBarra.data.datasets[idx].data = barraData[id];
+      chartCelda1.data.datasets[idx].data = celda1Data[id];
+    });
+    chartBarra.update('none');
+    chartCelda1.update('none');
+  }
 });

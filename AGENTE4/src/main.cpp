@@ -9,8 +9,8 @@
 #define CAN_RX_PIN GPIO_NUM_4
 
 // Network and Firebase credentials
-#define WIFI_SSID "Red_Capstone"
-#define WIFI_PASSWORD "kkg9-nbfu-297p"
+#define WIFI_SSID "naico_wifi"
+#define WIFI_PASSWORD "12345678"
 
 #define Web_API_KEY "AIzaSyAVt_Gn_2jqQYufbcg4GzsJ6Q6MoozBGYU"
 #define DATABASE_URL "https://capstone-b36f2-default-rtdb.firebaseio.com/"
@@ -124,7 +124,7 @@ void Firebase_Update_Task(void *parameter) {
         xSemaphoreGive(dataMutex);
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(2000));
   }
 }
 

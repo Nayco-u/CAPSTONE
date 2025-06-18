@@ -1,0 +1,171 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+//Oled
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+//Sensor Corriente
+const float sensibilidad = 0.103;
+int N_MUESTRAS = 50;
+float suma = 0;
+float promedio = 0;
+int d2 = 10;
+
+//Oled
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET     -1 // Reset no usado en I2C
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+
+
+// --- ADS1115 ---
+Adafruit_ADS1115 ads1; // Primer sensor con dirección 0x48
+float corriente_salida = 0;
+int16_t v1 = 0;
+int16_t i1 = 0;
+
+// --- Variables globales ---
+// Variables de entrada (proporcionadas externamente)
+float voltage = 0.0;   // Voltaje del panel solar (en voltios)
+float current = 0.0;   // Corriente del panel solar (en amperios)
+float power = 0.0;
+
+// Parámetros MPPT P&O
+int duty_cycle = 0;            // Ciclo de trabajo actual (0 - 900)
+const int duty_step = 20;       // Paso de ajuste del duty cycle
+int duty_direction = 1;        // Dirección de ajuste: 1 = incrementar, -1 = decrementar
+
+
+// Temporizador no bloqueante
+unsigned long lastUpdateTime = 0;               // Última vez que se actualizó MPPT
+const unsigned long updateInterval = 1000;       // Intervalo de actualización (ms)
+
+// Almacenamiento de potencia anterior
+float previous_power = 0.0;
+
+
+
+//Prueba Oled
+#define MAX_POINTS 128
+uint8_t graphY[MAX_POINTS];
+int gindex = 0;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22); // SDA = 21, SCL = 22
+  // Configuración PWM (ejemplo usando canal LEDC en ESP32)
+  const int pwmFreq = 20000;
+  const int pwmChannel = 0;
+  const int pwmResolution = 10;  // Resolución de 10 bits (0-1023)
+  const int pwmPin = 18;          // Pin para la señal PWM al convertidor DC-DC
+
+  //Oled
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Dirección I2C común
+    Serial.println(F("No se encontró pantalla OLED"));
+    for (;;); // Bloquear
+  }
+  display.clearDisplay();
+  display.setTextSize(1);             // Tamaño de texto (1 = normal)
+  display.setTextColor(SSD1306_WHITE);
+  
+  //PWM
+  ledcSetup(pwmChannel, pwmFreq, pwmResolution);
+  ledcAttachPin(pwmPin, pwmChannel);
+  // Inicializar duty cycle
+  ledcWrite(pwmChannel, duty_cycle);
+
+  
+
+  // Inicializar el primer sensor ADS1115
+  if (!ads1.begin(0x48)) {
+    Serial.println("Error al inicializar el ADS1115 (0x48)");
+  }
+  ads1.setGain(GAIN_TWOTHIRDS); // Configurar rango de ±6.144V
+  Serial.println("Sensores ADS1115 inicializados correctamente.");
+
+  //Sensor Corriente
+  for (uint8_t i = 0; i < N_MUESTRAS; ++i) {
+    i1 = ads1.readADC_Differential_2_3();
+    suma += ads1.computeVolts(i1);
+    delay(d2);
+  }
+  promedio = suma / float(N_MUESTRAS);
+  Serial.println(promedio);
+
+
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  v1 = ads1.readADC_Differential_0_1(); // Canal 0-1
+  i1 = ads1.readADC_Differential_2_3(); // Canal 2-3
+  voltage = ads1.computeVolts(v1);
+  corriente_salida= ads1.computeVolts(i1);
+  current = (corriente_salida-(promedio))/sensibilidad;
+
+  // Verificar si ha pasado el intervalo para actualizar MPPT
+  if (currentMillis - lastUpdateTime >= updateInterval) {
+    lastUpdateTime = currentMillis;
+
+    // Calcular potencia actual del panel
+    power = voltage * current;
+
+    // Algoritmo P&O (Perturbar y Observar)
+    if (power > previous_power) {
+      // La potencia aumentó; mantener la misma dirección de ajuste
+      // (duty_direction no cambia)
+    } else {
+      // La potencia disminuyó; invertir la dirección de ajuste
+      duty_direction = -duty_direction;
+    }
+
+    // Ajustar el duty cycle según la dirección
+    duty_cycle += duty_direction * duty_step;
+
+    // Limitar el duty_cycle al rango [0, 900]
+    if (duty_cycle > 900) {
+      duty_cycle = 900;
+    } else if (duty_cycle < 0) {
+      duty_cycle = 0;
+    }
+
+    // Actualizar la señal PWM con el nuevo duty cycle
+    ledcWrite(0, duty_cycle);  // Canal 0 usado en setup()
+
+    // Guardar la potencia actual para la próxima iteración
+    previous_power = power;
+  }
+
+  //Oled
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.print("Potencia: ");
+  display.print(power, 2);
+  display.setCursor(100, 0);
+  display.print("[W]");
+
+  display.setCursor(0, 16);
+  display.print("Voltage: ");
+  display.print(voltage, 2);
+  display.setCursor(100, 16);
+  display.print("[V]");
+
+  display.setCursor(0, 32);
+  display.print("Current: ");
+  display.print(current, 2);
+  display.setCursor(100, 32);
+  display.print("[A]");
+
+  float pwm_per = (duty_cycle/1023)*100;
+  display.setCursor(0, 48);
+  display.print("DutyC:   ");
+  display.print(duty_cycle);
+  display.setCursor(100, 48);
+  display.print("[%]");
+
+  display.display();
+  //Serial.println("V: "+ String(voltage,3)+"   I: "+String(current,3)+"   D: "+String(duty_cycle)+"   Prom: "+String(promedio,3));
+}

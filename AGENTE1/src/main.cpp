@@ -207,9 +207,9 @@ void PWM_Control_Task(void *pvParameters) {
 
     // Leer voltajes de las celdas y actualizar buffers de promedio móvil
     raw_cell1 = ads1.readADC_Differential_0_3(); // Canal 0-3
-    //raw_barra = ads1.readADC_Differential_1_3(); // Canal 1-3
-    //raw_batery = ads2.readADC_Differential_0_3(); // Canal 0 -3
-    //raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
+    raw_barra = ads1.readADC_Differential_1_3(); // Canal 1-3
+    raw_batery = ads2.readADC_Differential_0_3(); // Canal 0 -3
+    raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
 
     v_cell1_buffer[avg_index] = raw_cell1;
     v_barra_buffer[avg_index] = raw_barra;
@@ -228,7 +228,7 @@ void PWM_Control_Task(void *pvParameters) {
       i_converter = moving_average(i_converter_buffer, AVG_WINDOW, avg_filled) - i_converter_bias;
       xSemaphoreGive(dataMutex);
     }
-    soc += i_battery * 720000 * 0.0001875; // Actualizar SOC basado en la corriente de la batería
+    soc += i_battery * 7200 * 0.0001875; // Actualizar SOC basado en la corriente de la batería
     voltaje = v_barra * 0.0001875; // Convertir a voltios
     corriente = i_battery * 0.0001875 * 10; // Convertir a amperios
 
@@ -384,24 +384,6 @@ void setup() {
   }
 
   Wire.begin(21, 22); // SDA = 21, SCL = 22
-  Serial.println("Escaneando I2C...");
-  byte error, address;
-  int count = 0;
-
-  for (address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
-    if (error == 0) {
-      Serial.print("Dispositivo encontrado en 0x");
-      Serial.println(address, HEX);
-      count++;
-    }
-  }
-
-  if (count == 0)
-    Serial.println("¡Nada encontrado!");
-  else
-    Serial.println("Escaneo completo.");
 
   // Inicializar el primer sensor ADS1115
   while(!ads1.begin(0x48)) {

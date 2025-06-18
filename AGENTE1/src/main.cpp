@@ -11,11 +11,12 @@
 #include "driver/twai.h"
 
 // Pines para CAN
-#define CAN_TX_PIN GPIO_NUM_5
-#define CAN_RX_PIN GPIO_NUM_4
+#define CAN_TX_PIN GPIO_NUM_4
+#define CAN_RX_PIN GPIO_NUM_5
+#define GPIO_STOP_PIN  15  // Cambia por el pin que desees usar
 
 // Network and Firebase credentials
-#define WIFI_SSID "MRI_WIRELESS2"
+#define WIFI_SSID "MRI_Wireless2"
 #define WIFI_PASSWORD "2718281828"
 
 #define Web_API_KEY "AIzaSyAVt_Gn_2jqQYufbcg4GzsJ6Q6MoozBGYU"
@@ -56,15 +57,24 @@ const uint16_t DUTY_MIN = 0;
 
 // --- Control PI ---
 float V_REF = 5;     // Voltaje de referencia
-const float KP_1 = 5.0;      // Ganancia proporcional
-const float KI_1 = 10.0;       // Ganancia integral
+const float KP_1 = 5.0;      // Ganancia proporcional para voltaje
+const float KI_1 = 10.0;       // Ganancia integral para voltaje
 
-const float KP_2 = 5.0;      // Ganancia proporcional
-const float KI_2 = 10.0;       // Ganancia integral
+const float KP_2 = 5.0;      // Ganancia proporcional para corriente
+const float KI_2 = 10.0;       // Ganancia integral para corriente
+
+const float KP_3 = 0.1;      // Ganancia proporcional para SOC
+const float KI_3 = 0.1;       // Ganancia integral para SOC
 
 // --- ADS1115 ---
 Adafruit_ADS1115 ads1; // Primer sensor con dirección 0x48
 Adafruit_ADS1115 ads2; // Segundo sensor con dirección 0x49
+
+// --- Variables de inicio ---
+volatile bool agente_detener = false;
+TaskHandle_t handlePWM = NULL;
+TaskHandle_t handleCAN_TX = NULL;
+TaskHandle_t handleCAN_RX = NULL;
 
 // Firebase components
 UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
@@ -136,9 +146,12 @@ void PWM_Control_Task(void *pvParameters) {
   float corriente = 0.0;
   float error_v = 0.0;
   float integral_error_v = 0.0;
-
   float error_i = 0.0;
   float integral_error_i = 0.0;
+
+  bool control_enabled = true;
+  float error_soc = 0.0;
+  float integral_error_soc = 0.0;
 
   unsigned long start_time = millis();
   unsigned long end_time = 0;
@@ -180,9 +193,9 @@ void PWM_Control_Task(void *pvParameters) {
       }
       Serial.println("Bias calculado: ");
       Serial.print("i_battery_bias: ");
-      Serial.println(i_battery_bias);
+      Serial.println(i_battery_bias * 0.0001875 * 10); // Convertir a A
       Serial.print("i_converter_bias: ");
-      Serial.println(i_converter_bias);
+      Serial.println(i_converter_bias * 0.0001875 * 10); // Convertir a A
     } else {
       vTaskDelay(pdMS_TO_TICKS(20)); // Esperar 20 ms antes de la siguiente lectura
     };
@@ -194,9 +207,9 @@ void PWM_Control_Task(void *pvParameters) {
 
     // Leer voltajes de las celdas y actualizar buffers de promedio móvil
     raw_cell1 = ads1.readADC_Differential_0_3(); // Canal 0-3
-    raw_barra = ads1.readADC_Differential_1_3(); // Canal 1-3
-    raw_batery = ads2.readADC_Differential_0_3(); // Canal 0 -3
-    raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
+    //raw_barra = ads1.readADC_Differential_1_3(); // Canal 1-3
+    //raw_batery = ads2.readADC_Differential_0_3(); // Canal 0 -3
+    //raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
 
     v_cell1_buffer[avg_index] = raw_cell1;
     v_barra_buffer[avg_index] = raw_barra;
@@ -219,6 +232,13 @@ void PWM_Control_Task(void *pvParameters) {
     voltaje = v_barra * 0.0001875; // Convertir a voltios
     corriente = i_battery * 0.0001875 * 10; // Convertir a amperios
 
+    // Revisar SOC
+    if (soc < 0) {
+      soc = 0; // Evitar valores negativos
+    } else if (soc > 10000) {
+      soc = 10000; // Limitar a 100%
+    }
+
     int agentes_activos = 1; // Siempre este agente está activo
     int32_t suma_soc = soc;
 
@@ -234,32 +254,63 @@ void PWM_Control_Task(void *pvParameters) {
     soc_promedio = suma_soc / agentes_activos; // Promedio de SOC de los agentes
     int16_t delta_soc = soc_promedio - soc; // Diferencia entre SOC local y promedio
 
-    // --- Controlador PI ---
-    error_v = V_REF - voltaje - (delta_soc * 0.0001); // Ajustar error con delta SOC
-    integral_error_v += error_v * 0.05;
+    if (control_enabled){
+      // --- Controlador PI ---
+      error_v = V_REF - voltaje - (delta_soc * 0.0001); // Ajustar error con delta SOC
+      integral_error_v += error_v * 0.05;
 
-    float i_ref = KP_1 * error_v + KI_1 * integral_error_v;
+      float i_ref = KP_1 * error_v + KI_1 * integral_error_v;
 
-    error_i = i_ref - corriente; // Error de corriente
-    integral_error_i += error_i * 0.05;
+      error_i = i_ref - corriente; // Error de corriente
+      integral_error_i += error_i * 0.05;
 
-    float control = KP_2 * error_i + KI_2 * integral_error_i;
-    duty = constrain((int)control, DUTY_MIN, DUTY_MAX);
+      float control = KP_2 * error_i + KI_2 * integral_error_i;
+      duty = constrain((int)control, DUTY_MIN, DUTY_MAX);
 
-    // Aplicar PWM
-    ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
-    ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
+      // Aplicar PWM
+      ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
+      ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
 
-    // Imprimir valores para depuración
-    Serial.print("Voltaje: ");
-    Serial.print(voltaje, 2);
-    Serial.print(" V, SOC: ");
-    Serial.print(soc / 100, 3);
-    Serial.print("%, Corriente Batería: ");
-    Serial.print(i_battery * 0.0001875 * 10, 3);
-    Serial.print(" V, Duty: ");
-    Serial.println(duty);
-    
+      // Revisar SOC
+      if (abs(delta_soc) > 500) { // Si la diferencia es mayor a 5%
+        control_enabled = false; // Desactivar control si el SOC está muy desbalanceado
+        Serial.println("Control desactivado por SOC desbalanceado");
+      } else {
+        control_enabled = true; // Activar control si el SOC está balanceado
+      }
+
+      // Imprimir valores para depuración
+      Serial.print("Voltaje: ");
+      Serial.print(voltaje, 2);
+      Serial.print(" V, SOC: ");
+      Serial.print(soc / 100, 3);
+      Serial.print("%, Corriente Batería: ");
+      Serial.print(i_battery * 0.0001875 * 10, 3);
+      Serial.print(" V, Duty: ");
+      Serial.println(duty);
+    } else {
+      // Control por SOC;
+      error_soc = soc_promedio - soc; // Error de SOC
+      integral_error_soc += error_soc * 0.05;
+
+      float control_soc = KP_3 * error_soc + KI_3 * integral_error_soc;
+      duty = constrain((int)control_soc, DUTY_MIN, DUTY_MAX);
+
+      // Aplicar PWM
+      ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
+      ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
+
+      // Imprimir valores para depuración
+      Serial.print("Voltaje: ");
+      Serial.print(voltaje, 2);
+      Serial.print(" V, SOC: ");
+      Serial.print(soc / 100, 3);
+      Serial.print("%, Corriente Batería: ");
+      Serial.print(i_battery * 0.0001875 * 10, 3);
+      Serial.print(" V, Duty: ");
+      Serial.println(duty);
+    }
+
     // Actualizar tiempo
     end_time = millis();
     int delta = 50 + start_time - end_time;
@@ -282,12 +333,28 @@ void Firebase_Update_Task(void *parameter) {
         writer.create(objTime, "/time", millis() / 1000); // Tiempo en segundos
         xSemaphoreGive(dataMutex);
       }
-      writer.join(jsonData, 3, objBarra, objCelda, objBattery, objIBarra, objTime);
+      writer.join(jsonData, 5, objBarra, objCelda, objBattery, objIBarra, objTime);
       Database.set<object_t>(aClient, "/Agents/Agent1", jsonData, processData, "🔐 Firebase_Update_Task");
       vTaskDelay(pdMS_TO_TICKS(5000)); // Actualizar cada 5 segundos
     } else {
       vTaskDelay(pdMS_TO_TICKS(1000)); // Espera y reintenta si no está lista
     }
+  }
+}
+
+void IRAM_ATTR stop_isr() {
+  static unsigned long last_interrupt = 0;
+  unsigned long now = millis();
+  if (now - last_interrupt < 200) return; // Antirrebote simple
+  last_interrupt = now;
+
+  agente_detener = !agente_detener; // Alterna el estado
+
+  if (!agente_detener) {
+    // Reactivar tareas desde ISR
+    if (handlePWM) xTaskResumeFromISR(handlePWM);
+    if (handleCAN_TX) xTaskResumeFromISR(handleCAN_TX);
+    if (handleCAN_RX) xTaskResumeFromISR(handleCAN_RX);
   }
 }
 
@@ -317,16 +384,36 @@ void setup() {
   }
 
   Wire.begin(21, 22); // SDA = 21, SCL = 22
+  Serial.println("Escaneando I2C...");
+  byte error, address;
+  int count = 0;
+
+  for (address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+    if (error == 0) {
+      Serial.print("Dispositivo encontrado en 0x");
+      Serial.println(address, HEX);
+      count++;
+    }
+  }
+
+  if (count == 0)
+    Serial.println("¡Nada encontrado!");
+  else
+    Serial.println("Escaneo completo.");
 
   // Inicializar el primer sensor ADS1115
-  if (!ads1.begin(0x48)) {
-    Serial.println("Error al inicializar el ADS1115 (0x48)");
+  while(!ads1.begin(0x48)) {
+    Serial.println("Error al inicializar el ADS1115 (0x48), reintentando...");
+    delay(1000); // Esperar 1 segundo antes de reintentar
   }
   ads1.setGain(GAIN_TWOTHIRDS); // Configurar rango de ±6.144V
 
   // Inicializar el segundo sensor ADS1115
-  if (!ads2.begin(0x49)) {
-    Serial.println("Error al inicializar el ADS1115 (0x49)");
+  while(!ads2.begin(0x49)) {
+    Serial.println("Error al inicializar el ADS1115 (0x49), reintentando...");
+    delay(1000); // Esperar 1 segundo antes de reintentar
   }
   ads2.setGain(GAIN_TWOTHIRDS); // Configurar rango de ±6.144V
 
@@ -337,11 +424,14 @@ void setup() {
   // Crear Mutex
   dataMutex = xSemaphoreCreateMutex();
 
-  // Crear tareas (simulación de paralelismo)
+  pinMode(GPIO_STOP_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(GPIO_STOP_PIN), stop_isr, FALLING);
+
+  // Crear tareas y guardar los handles
+  xTaskCreatePinnedToCore(PWM_Control_Task, "PWM_Control", 4096, NULL, 1, &handlePWM, 1);
+  xTaskCreatePinnedToCore(CAN_TX_Task, "CAN_TX", 2048, NULL, 2, &handleCAN_TX, 1);
+  xTaskCreatePinnedToCore(CAN_RX_Task, "CAN_RX", 2048, NULL, 2, &handleCAN_RX, 1);
   xTaskCreatePinnedToCore(Firebase_Update_Task, "Firebase_Update", 8192, NULL, 1, NULL, 0); // Núcleo 0
-  // xTaskCreatePinnedToCore(CAN_TX_Task, "CAN_TX", 2048, NULL, 2, NULL, 1);  // Núcleo 1
-  // xTaskCreatePinnedToCore(CAN_RX_Task, "CAN_RX", 2048, NULL, 2, NULL, 1);  // Núcleo 1
-  xTaskCreatePinnedToCore(PWM_Control_Task, "PWM_Control", 4096, NULL, 1, NULL, 1);  // Núcleo 1
 }
 
 void loop() {

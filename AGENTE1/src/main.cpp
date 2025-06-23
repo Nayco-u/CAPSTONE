@@ -150,6 +150,7 @@ void PWM_Control_Task(void *pvParameters) {
   float integral_error_i = 0.0;
 
   bool control_enabled = true;
+  float soc_float = 0.0;
   float error_soc = 0.0;
   float integral_error_soc = 0.0;
 
@@ -178,7 +179,7 @@ void PWM_Control_Task(void *pvParameters) {
       avg_index = 0;
       avg_filled = true;
     }
-    soc = moving_average(v_cell1_buffer, AVG_WINDOW, avg_filled) * 1.641651 - 26000;
+    soc_float = moving_average(v_cell1_buffer, AVG_WINDOW, avg_filled) * 1.641651 - 26000;
     i_battery_bias = moving_average(i_battery_buffer, AVG_WINDOW, avg_filled);
     i_converter_bias = moving_average(i_converter_buffer, AVG_WINDOW, avg_filled);
 
@@ -193,9 +194,9 @@ void PWM_Control_Task(void *pvParameters) {
       }
       Serial.println("Bias calculado: ");
       Serial.print("i_battery_bias: ");
-      Serial.println(i_battery_bias * 0.0001875 * 10); // Convertir a A
+      Serial.println(ads1.computeVolts(i_battery_bias) * 10); // Convertir a A
       Serial.print("i_converter_bias: ");
-      Serial.println(i_converter_bias * 0.0001875 * 10); // Convertir a A
+      Serial.println(ads1.computeVolts(i_battery_bias)  * 10); // Convertir a A
     } else {
       vTaskDelay(pdMS_TO_TICKS(20)); // Esperar 20 ms antes de la siguiente lectura
     };
@@ -228,9 +229,10 @@ void PWM_Control_Task(void *pvParameters) {
       i_converter = moving_average(i_converter_buffer, AVG_WINDOW, avg_filled) - i_converter_bias;
       xSemaphoreGive(dataMutex);
     }
-    soc += i_battery * 7200 * 0.0001875; // Actualizar SOC basado en la corriente de la batería
-    voltaje = v_barra * 0.0001875; // Convertir a voltios
-    corriente = i_battery * 0.0001875 * 10; // Convertir a amperios
+    soc_float += ads2.computeVolts(i_battery) / 0.103 / 18; // Actualizar SOC basado en la corriente de la batería
+    soc = (int16_t)(soc_float); // Convertir a entero y escalar a porcentaje
+    voltaje = ads1.computeVolts(v_barra) / 2; // Convertir a voltios
+    corriente = ads2.computeVolts(i_converter) / 0.103; // Convertir a amperios
 
     // Revisar SOC
     if (soc < 0) {
@@ -285,8 +287,8 @@ void PWM_Control_Task(void *pvParameters) {
       Serial.print(" V, SOC: ");
       Serial.print(soc / 100, 3);
       Serial.print("%, Corriente Batería: ");
-      Serial.print(i_battery * 0.0001875 * 10, 3);
-      Serial.print(" V, Duty: ");
+      Serial.print(ads2.computeVolts(i_battery) / 0.103, 3);
+      Serial.print(" A, Duty: ");
       Serial.println(duty);
     } else {
       // Control por SOC;

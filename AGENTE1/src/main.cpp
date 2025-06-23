@@ -251,7 +251,7 @@ void PWM_Control_Task(void *pvParameters) {
 
     int agentes_activos = 1; // Siempre este agente está activo
     int32_t suma_soc = soc;
-    int32_t i_converter_sum = 0;
+    int32_t i_converter_sum = i_converter;
 
     if (start_time - agente2_last_update < 2000) { // 2 segundos
         suma_soc += soc_agente2;

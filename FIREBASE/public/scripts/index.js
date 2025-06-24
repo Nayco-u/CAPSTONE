@@ -33,7 +33,7 @@ if (typeof Chart === "undefined") {
 
 // --- Configuración de buffers para los últimos 60 datos ---
 const MAX_POINTS = 60;
-const agentIds = ["Agent1", "Agent2", "Agent3"];
+const agentIds = ["1", "2", "3"];
 const barraData = {};
 const celda1Data = {};
 const timeData = {}; // Nuevo: buffer de tiempo por agente
@@ -210,15 +210,12 @@ onValue(agentsRef, (snapshot) => {
 
   Object.keys(data).forEach(id => {
     const agent = data[id];
-    createAgentCharts(id); // <-- Crear los gráficos para este agente
 
     document.getElementById(`v_barra-${id}`).innerText = agent.v_barra?.toFixed(2) ?? '-';
     document.getElementById(`v_celda1-${id}`).innerText = agent.v_celda1?.toFixed(2) ?? '-';
     document.getElementById(`i_battery-${id}`).innerText = agent.i_battery?.toFixed(2) ?? '-';
     document.getElementById(`i_barra-${id}`).innerText = agent.i_barra?.toFixed(2) ?? '-';
     document.getElementById(`soc-${id}`).innerText = agent.soc?.toFixed(2) ?? '-';
-
-    updateAgentCharts(id, agent); // <-- Actualizar los gráficos de este agente
 
     // --- Actualizar buffers de datos para gráficos globales ---
     if (typeof agent.time !== "undefined") {

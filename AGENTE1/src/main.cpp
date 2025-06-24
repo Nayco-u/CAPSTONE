@@ -34,6 +34,9 @@ void setupPWM();
 int16_t v_cell1 = 0;       // Voltaje celda 1 en mV
 int16_t i_battery = 0;     // Corriente de la batería en mA
 int16_t i_converter = 0;   // Corriente del convertidor en mA
+int16_t i_converter_promedio = 0; // Corriente promedio del convertidor en mA
+int16_t i_converter_agente2 = 0; // Corriente del convertidor del agente 2 en mA
+int16_t i_converter_agente3 = 0; // Corriente del convertidor del agente 3 en mA
 int16_t v_barra = 0;       // Voltaje de la barra en mV
 int16_t soc = 0;           // Estado de carga (SOC) en %
 int16_t soc_promedio = 0;  // SOC promedio recibido del maestro
@@ -108,12 +111,14 @@ void CAN_TX_Task(void *pvParameters) {
   twai_message_t message;
   message.identifier = 0x201;
   message.flags = TWAI_MSG_FLAG_NONE;
-  message.data_length_code = 2; // Solo SOC
+  message.data_length_code = 4; // SOC y corriente
 
   while (true) {
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       message.data[0] = soc & 0xFF;
       message.data[1] = soc >> 8;
+      message.data[2] = (i_converter & 0xFF);
+      message.data[3] = (i_converter >> 8);
       xSemaphoreGive(dataMutex);
     }
     twai_transmit(&message, pdMS_TO_TICKS(10));
@@ -125,13 +130,16 @@ void CAN_RX_Task(void *pvParameters) {
   while (true) {
     twai_message_t message;
     if (twai_receive(&message, pdMS_TO_TICKS(100)) == ESP_OK) {
-      if (message.data_length_code == 2) {
+      if (message.data_length_code == 4) {
         int16_t soc_recibido = (message.data[0] | (message.data[1] << 8));
+        int16_t corriente_recibida = (message.data[2] | (message.data[3] << 8));
         if (message.identifier == 0x202) {
           soc_agente2 = soc_recibido;
+          i_converter_agente2 = corriente_recibida;
           agente2_last_update = millis(); // Actualizar tiempo de última recepción
         } else if (message.identifier == 0x203) {
           soc_agente3 = soc_recibido;
+          i_converter_agente3 = corriente_recibida;
           agente3_last_update = millis(); // Actualizar tiempo de última recepción
         }
       }
@@ -159,7 +167,7 @@ void PWM_Control_Task(void *pvParameters) {
 
   int16_t raw_cell1 = 0;
   int16_t raw_barra = 0;
-  int16_t raw_batery = 0;
+  int16_t raw_battery = 0;
   int16_t raw_converter = 0;
 
   bool bias_calculated = false;
@@ -168,11 +176,11 @@ void PWM_Control_Task(void *pvParameters) {
 
   while(!bias_calculated) {
     raw_cell1 = ads1.readADC_Differential_0_3(); // Canal 0-3
-    raw_batery = ads2.readADC_Differential_0_3(); // Canal 0-3 (corriente)
+    raw_battery = ads2.readADC_Differential_0_3(); // Canal 0-3
     raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
 
     v_cell1_buffer[avg_index] = raw_cell1;
-    i_battery_buffer[avg_index] = raw_batery;
+    i_battery_buffer[avg_index] = raw_battery;
     i_converter_buffer[avg_index] = raw_converter;
     avg_index++;
     if (avg_index >= AVG_WINDOW) {
@@ -207,16 +215,16 @@ void PWM_Control_Task(void *pvParameters) {
     start_time = millis();
 
     // Leer voltajes de las celdas y actualizar buffers de promedio móvil
-    raw_cell1 = ads1.readADC_Differential_1_3(); // Canal 0-3
-    raw_barra = ads1.readADC_Differential_0_3(); // Canal 1-3
-    raw_batery = ads2.readADC_Differential_0_3(); // Canal 0 -3
+    raw_barra = ads1.readADC_Differential_0_3(); // Canal 0-3
+    raw_cell1 = ads1.readADC_Differential_1_3(); // Canal 1-3
+    raw_battery = ads2.readADC_Differential_0_3(); // Canal 0 -3
     raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
 
 
 
     v_cell1_buffer[avg_index] = raw_cell1;
     v_barra_buffer[avg_index] = raw_barra;
-    i_battery_buffer[avg_index] = raw_batery;
+    i_battery_buffer[avg_index] = raw_battery;
     i_converter_buffer[avg_index] = raw_converter;
     avg_index++;
     if (avg_index >= AVG_WINDOW) {
@@ -246,17 +254,21 @@ void PWM_Control_Task(void *pvParameters) {
 
     int agentes_activos = 1; // Siempre este agente está activo
     int32_t suma_soc = soc;
+    int32_t i_converter_sum = i_converter;
 
     if (start_time - agente2_last_update < 2000) { // 2 segundos
         suma_soc += soc_agente2;
+        i_converter_sum += i_converter_agente2;
         agentes_activos++;
     }
     if (start_time - agente3_last_update < 2000) {
         suma_soc += soc_agente3;
+        i_converter_sum += i_converter_agente3;
         agentes_activos++;
     }
 
     soc_promedio = suma_soc / agentes_activos; // Promedio de SOC de los agentes
+    i_converter_promedio = i_converter_sum / agentes_activos; // Promedio de corriente de batería
     int16_t delta_soc = soc_promedio - soc; // Diferencia entre SOC local y promedio
 
     if (control_enabled){
@@ -266,7 +278,7 @@ void PWM_Control_Task(void *pvParameters) {
 
       float i_ref = KP_1 * error_v + KI_1 * integral_error_v;
 
-      error_i = i_ref - corriente; // Error de corriente
+      error_i = i_ref - i_converter_promedio; // Error de corriente
       integral_error_i += error_i * 0.05;
 
       float control = KP_2 * error_i + KI_2 * integral_error_i;
@@ -325,21 +337,21 @@ void PWM_Control_Task(void *pvParameters) {
 
 void Firebase_Update_Task(void *parameter) {
   JsonWriter writer;
-  object_t jsonData, objBarra, objCelda, objBattery, objIBarra, objTime;
+  object_t jsonData, objBarra, objCelda, objBattery, objIBarra, objSOC, objTime;
   while(true){
     app.loop(); // Mantener la aplicación Firebase activa
     if (app.ready()) {
       if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-        writer.create(objBarra, "/barra", v_barra * 0.0001875);
-        writer.create(objCelda, "/celda1", v_cell1 * 0.0001875);
-        writer.create(objBattery, "/battery", i_battery * 0.0001875 * 10); // Corriente de la batería en A
-        writer.create(objIBarra, "/ibar", i_converter * 0.0001875 * 10); // Corriente del convertidor en A
-        writer.create(jsonData, "/soc", soc / 100.0); // SOC en porcentaje
+        writer.create(objBarra, "/v_barra", ads1.computeVolts(v_barra) * 2); // Voltaje de la barra en V
+        writer.create(objCelda, "/v_celda1", ads1.computeVolts(v_cell1)); // Voltaje de la celda 1 en V
+        writer.create(objBattery, "/i_battery", ads2.computeVolts(i_battery) / 0.103); // Corriente de la batería en A
+        writer.create(objIBarra, "/i_barra", ads2.computeVolts(i_converter) / 0.103); // Corriente del convertidor en A
+        writer.create(objSOC, "/soc", soc / 100.0); // SOC en porcentaje
         writer.create(objTime, "/time", millis() / 1000); // Tiempo en segundos
         xSemaphoreGive(dataMutex);
       }
-      writer.join(jsonData, 5, objBarra, objCelda, objBattery, objIBarra, objTime);
-      Database.set<object_t>(aClient, "/Agents/Agent1", jsonData, processData, "🔐 Firebase_Update_Task");
+      writer.join(jsonData, 6, objBarra, objCelda, objBattery, objIBarra, objSOC, objTime);
+      Database.set<object_t>(aClient, "/Agents/1", jsonData, processData, "🔐 Firebase_Update_Task");
       vTaskDelay(pdMS_TO_TICKS(5000)); // Actualizar cada 5 segundos
     } else {
       vTaskDelay(pdMS_TO_TICKS(1000)); // Espera y reintenta si no está lista

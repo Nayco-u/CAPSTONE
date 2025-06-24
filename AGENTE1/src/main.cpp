@@ -57,10 +57,10 @@ const uint16_t DUTY_MIN = 0;
 
 // --- Control PI ---
 float V_REF = 5;     // Voltaje de referencia
-const float KP_1 = 5.0;      // Ganancia proporcional para voltaje
-const float KI_1 = 10.0;       // Ganancia integral para voltaje
+const float KP_1 = 2.0;      // Ganancia proporcional para voltaje
+const float KI_1 = 4.0;       // Ganancia integral para voltaje
 
-const float KP_2 = 5.0;      // Ganancia proporcional para corriente
+const float KP_2 = 1.0;      // Ganancia proporcional para corriente
 const float KI_2 = 10.0;       // Ganancia integral para corriente
 
 const float KP_3 = 0.1;      // Ganancia proporcional para SOC
@@ -168,7 +168,7 @@ void PWM_Control_Task(void *pvParameters) {
 
   while(!bias_calculated) {
     raw_cell1 = ads1.readADC_Differential_0_3(); // Canal 0-3
-    raw_batery = ads2.readADC_Differential_0_3(); // Canal 0-3
+    raw_batery = ads2.readADC_Differential_0_3(); // Canal 0-3 (corriente)
     raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
 
     v_cell1_buffer[avg_index] = raw_cell1;
@@ -207,10 +207,12 @@ void PWM_Control_Task(void *pvParameters) {
     start_time = millis();
 
     // Leer voltajes de las celdas y actualizar buffers de promedio móvil
-    raw_cell1 = ads1.readADC_Differential_0_3(); // Canal 0-3
-    raw_barra = ads1.readADC_Differential_1_3(); // Canal 1-3
+    raw_cell1 = ads1.readADC_Differential_1_3(); // Canal 0-3
+    raw_barra = ads1.readADC_Differential_0_3(); // Canal 1-3
     raw_batery = ads2.readADC_Differential_0_3(); // Canal 0 -3
     raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
+
+
 
     v_cell1_buffer[avg_index] = raw_cell1;
     v_barra_buffer[avg_index] = raw_barra;
@@ -231,8 +233,9 @@ void PWM_Control_Task(void *pvParameters) {
     }
     soc_float += ads2.computeVolts(i_battery) / 0.103 / 18; // Actualizar SOC basado en la corriente de la batería
     soc = (int16_t)(soc_float); // Convertir a entero y escalar a porcentaje
-    voltaje = ads1.computeVolts(v_barra) / 2; // Convertir a voltios
+    voltaje = ads1.computeVolts(v_barra) * 2; // Convertir a voltios
     corriente = ads2.computeVolts(i_converter) / 0.103; // Convertir a amperios
+  
 
     // Revisar SOC
     if (soc < 0) {

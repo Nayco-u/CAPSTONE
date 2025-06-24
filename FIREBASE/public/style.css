@@ -42,24 +42,35 @@ body {
   
   .charts-outer-container {
     display: flex;
+    flex-wrap: wrap;
     justify-content: center;
-    align-items: center;
+    align-items: flex-start;
+    gap: 1rem;
     margin-top: 32px;
   }
   
-  .charts-box {
-    display: flex;
-    flex-direction: row;
-    gap: 32px;
-    background: #fff;
-    border-radius: 16px;
-    box-shadow: 0 2px 16px rgba(0,0,0,0.12);
-    padding: 32px 32px;
-  }
-  
-  .chart-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    min-width: 320px;
-  }
+  /* Distribución vertical y responsive de los gráficos */
+.charts-box {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+  width: 100%;
+}
+
+.chart-item {
+  width: 700px; /* Puedes ajustar este valor según lo que prefieras */
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px #0001;
+  padding: 16px;
+  box-sizing: border-box;
+  margin: 8px 0;
+}
+
+/* Hace que los canvas sean responsive dentro de su caja */
+.chart-item canvas {
+  width: 100% !important;
+  height: 250px !important;
+  max-width: 100%;
+}

@@ -130,7 +130,7 @@ void CAN_RX_Task(void *pvParameters) {
   while (true) {
     twai_message_t message;
     if (twai_receive(&message, pdMS_TO_TICKS(100)) == ESP_OK) {
-      if (message.data_length_code == 2) {
+      if (message.data_length_code == 4) {
         int16_t soc_recibido = (message.data[0] | (message.data[1] << 8));
         int16_t corriente_recibida = (message.data[2] | (message.data[3] << 8));
         if (message.identifier == 0x202) {
@@ -334,21 +334,21 @@ void PWM_Control_Task(void *pvParameters) {
 
 void Firebase_Update_Task(void *parameter) {
   JsonWriter writer;
-  object_t jsonData, objBarra, objCelda, objBattery, objIBarra, objTime;
+  object_t jsonData, objBarra, objCelda, objBattery, objIBarra, objSOC, objTime;
   while(true){
     app.loop(); // Mantener la aplicación Firebase activa
     if (app.ready()) {
       if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-        writer.create(objBarra, "/barra", v_barra * 0.0001875);
-        writer.create(objCelda, "/celda1", v_cell1 * 0.0001875);
-        writer.create(objBattery, "/battery", i_battery * 0.0001875 * 10); // Corriente de la batería en A
-        writer.create(objIBarra, "/ibar", i_converter * 0.0001875 * 10); // Corriente del convertidor en A
-        writer.create(jsonData, "/soc", soc / 100.0); // SOC en porcentaje
+        writer.create(objBarra, "/v_barra", ads1.computeVolts(v_barra) * 2); // Voltaje de la barra en V
+        writer.create(objCelda, "/v_celda1", ads1.computeVolts(v_cell1)); // Voltaje de la celda 1 en V
+        writer.create(objBattery, "/i_battery", ads2.computeVolts(i_battery) / 0.103); // Corriente de la batería en A
+        writer.create(objIBarra, "/i_barra", ads2.computeVolts(i_converter) / 0.103); // Corriente del convertidor en A
+        writer.create(objSOC, "/soc", soc / 100.0); // SOC en porcentaje
         writer.create(objTime, "/time", millis() / 1000); // Tiempo en segundos
         xSemaphoreGive(dataMutex);
       }
-      writer.join(jsonData, 5, objBarra, objCelda, objBattery, objIBarra, objTime);
-      Database.set<object_t>(aClient, "/Agents/Agent1", jsonData, processData, "🔐 Firebase_Update_Task");
+      writer.join(jsonData, 6, objBarra, objCelda, objBattery, objIBarra, objSOC, objTime);
+      Database.set<object_t>(aClient, "/Agents/1", jsonData, processData, "🔐 Firebase_Update_Task");
       vTaskDelay(pdMS_TO_TICKS(5000)); // Actualizar cada 5 segundos
     } else {
       vTaskDelay(pdMS_TO_TICKS(1000)); // Espera y reintenta si no está lista

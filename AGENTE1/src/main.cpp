@@ -297,12 +297,16 @@ void PWM_Control_Task(void *pvParameters) {
       }
 
       // Imprimir valores para depuración
-      Serial.print("Voltaje: ");
+      Serial.print("Voltaje Barra: ");
       Serial.print(voltaje, 2);
+      Serial.print("Voltaje Celda: ");
+      Serial.print(ads1.computeVolts(v_cell1), 2);
       Serial.print(" V, SOC: ");
       Serial.print(soc / 100, 3);
       Serial.print("%, Corriente Batería: ");
       Serial.print(ads2.computeVolts(i_battery) / 0.103, 3);
+      Serial.print("A, Corriente a Barra: ");
+      Serial.print(corriente, 3);
       Serial.print(" A, Duty: ");
       Serial.println(duty);
     } else {
@@ -318,12 +322,16 @@ void PWM_Control_Task(void *pvParameters) {
       ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
 
       // Imprimir valores para depuración
-      Serial.print("Voltaje: ");
+      Serial.print("Voltaje Barra: ");
       Serial.print(voltaje, 2);
+      Serial.print("Voltaje Celda: ");
+      Serial.print(ads1.computeVolts(v_cell1), 2);
       Serial.print(" V, SOC: ");
       Serial.print(soc / 100, 3);
       Serial.print("%, Corriente Batería: ");
       Serial.print(i_battery * 0.0001875 * 10, 3);
+      Serial.print("A, Corriente a Barra: ");
+      Serial.print(corriente, 3);
       Serial.print(" V, Duty: ");
       Serial.println(duty);
     }

@@ -1,497 +1,81 @@
-#define ENABLE_USER_AUTH
-#define ENABLE_DATABASE
-
 #include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_ADS1X15.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <FirebaseClient.h>
-#include "driver/ledc.h"
-#include "driver/twai.h"
+#include "utils.h"
+#include "can_comm.h"
+#include "pwm_control.h"
+#include "sensors.h"
+#include "firebase_task.h"
+#include "bms.h"
 
-// Pines para CAN
-#define CAN_TX_PIN GPIO_NUM_4
-#define CAN_RX_PIN GPIO_NUM_5
-#define GPIO_STOP_PIN  15  // Cambia por el pin que desees usar
+/* void processSerialCommands(void *pvParameter) {
+    while (true) {
+        if (Serial.available()) {
+            String cmd = Serial.readStringUntil('\n');
+            cmd.trim();
+            // Formato: KP1=2.5, KI2=1.2, etc.
+            if (cmd.startsWith("q")) { KP_1 = cmd.substring(1).toFloat(); integral_error_v = 0.0; integral_error_i = 0.0; }
+            else if (cmd.startsWith("w")) { KI_1 = cmd.substring(1).toFloat(); integral_error_v = 0.0; integral_error_i = 0.0; }
+            else if (cmd.startsWith("e")) { KP_2 = cmd.substring(1).toFloat(); integral_error_v = 0.0; integral_error_i = 0.0; }
+            else if (cmd.startsWith("r")) { KI_2 = cmd.substring(1).toFloat(); integral_error_v = 0.0; integral_error_i = 0.0; }
+            else if (cmd.startsWith("t")) { KP_3 = cmd.substring(1).toFloat(); integral_error_soc = 0.0; }
+            else if (cmd.startsWith("y")) { KI_3 = cmd.substring(1).toFloat(); integral_error_soc = 0.0; }
 
-// Network and Firebase credentials
-#define WIFI_SSID "MRI_Wireless2"
-#define WIFI_PASSWORD "2718281828"
-
-#define Web_API_KEY "AIzaSyAVt_Gn_2jqQYufbcg4GzsJ6Q6MoozBGYU"
-#define DATABASE_URL "https://capstone-b36f2-default-rtdb.firebaseio.com/"
-#define USER_EMAIL "capstone.potencia.2025@gmail.com"
-#define USER_PASS "capstone2025"
-
-// User functions
-void asyncCB(AsyncResult &aResult);
-void processData(AsyncResult &aResult);
-void initWiFi();
-void setupPWM();
-
-// Variables globales compartidas
-int16_t v_cell1 = 0;       // Voltaje celda 1 en mV
-int16_t i_battery = 0;     // Corriente de la batería en mA
-int16_t i_converter = 0;   // Corriente del convertidor en mA
-int16_t i_converter_promedio = 0; // Corriente promedio del convertidor en mA
-int16_t i_converter_agente2 = 0; // Corriente del convertidor del agente 2 en mA
-int16_t i_converter_agente3 = 0; // Corriente del convertidor del agente 3 en mA
-int16_t v_barra = 0;       // Voltaje de la barra en mV
-int16_t soc = 0;           // Estado de carga (SOC) en %
-int16_t soc_promedio = 0;  // SOC promedio recibido del maestro
-int16_t soc_agente2 = 0;
-int16_t soc_agente3 = 0;
-
-unsigned long agente2_last_update = 0; // Última actualización de agente 2
-unsigned long agente3_last_update = 0; // Última actualización de agente 3
-
-SemaphoreHandle_t dataMutex;
-
-// --- Configuración de PWM ---
-const int PWM_PIN = 27;
-const ledc_channel_t PWM_CHANNEL = LEDC_CHANNEL_0;
-const ledc_timer_t PWM_TIMER = LEDC_TIMER_0;
-const ledc_timer_bit_t PWM_RESOLUTION = LEDC_TIMER_10_BIT; // 10 bits = 1024 niveles
-uint16_t duty = 0;
-const uint16_t freq = 20000;
-const uint16_t DUTY_MAX = 580; // Ajustado para un rango de 0-580
-const uint16_t DUTY_MIN = 0;
-
-// --- Control PI ---
-float V_REF = 5;     // Voltaje de referencia
-const float KP_1 = 2.0;      // Ganancia proporcional para voltaje
-const float KI_1 = 4.0;       // Ganancia integral para voltaje
-
-const float KP_2 = 1.0;      // Ganancia proporcional para corriente
-const float KI_2 = 10.0;       // Ganancia integral para corriente
-
-const float KP_3 = 0.1;      // Ganancia proporcional para SOC
-const float KI_3 = 0.1;       // Ganancia integral para SOC
-
-// --- ADS1115 ---
-Adafruit_ADS1115 ads1; // Primer sensor con dirección 0x48
-Adafruit_ADS1115 ads2; // Segundo sensor con dirección 0x49
-
-// --- Variables de inicio ---
-volatile bool agente_detener = false;
-TaskHandle_t handlePWM = NULL;
-TaskHandle_t handleCAN_TX = NULL;
-TaskHandle_t handleCAN_RX = NULL;
-
-// Firebase components
-UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
-FirebaseApp app;
-WiFiClientSecure ssl_client;
-using AsyncClient = AsyncClientClass;
-AsyncClient aClient(ssl_client);
-RealtimeDatabase Database;
-
-// --- Promedio móvil ---
-const int AVG_WINDOW = 10;
-int16_t v_cell1_buffer[AVG_WINDOW] = {0};
-int16_t v_barra_buffer[AVG_WINDOW] = {0};
-int16_t i_battery_buffer[AVG_WINDOW] = {0};
-int16_t i_converter_buffer[AVG_WINDOW] = {0};
-int avg_index = 0;
-bool avg_filled = false;
-
-int16_t moving_average(int16_t *buffer, int window, bool filled) {
-  long sum = 0;
-  int count = filled ? window : avg_index;
-  if (count == 0) return 0;
-  for (int i = 0; i < count; i++) sum += buffer[i];
-  return sum / count;
-}
-
-
-
-// Tareas en Núcleo 1
-void CAN_TX_Task(void *pvParameters) {
-  twai_message_t message;
-  message.identifier = 0x201;
-  message.flags = TWAI_MSG_FLAG_NONE;
-  message.data_length_code = 4; // SOC y corriente
-
-  while (true) {
-    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-      message.data[0] = soc & 0xFF;
-      message.data[1] = soc >> 8;
-      message.data[2] = (i_converter & 0xFF);
-      message.data[3] = (i_converter >> 8);
-      xSemaphoreGive(dataMutex);
-    }
-    twai_transmit(&message, pdMS_TO_TICKS(10));
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-
-void CAN_RX_Task(void *pvParameters) {
-  while (true) {
-    twai_message_t message;
-    if (twai_receive(&message, pdMS_TO_TICKS(100)) == ESP_OK) {
-      if (message.data_length_code == 4) {
-        int16_t soc_recibido = (message.data[0] | (message.data[1] << 8));
-        int16_t corriente_recibida = (message.data[2] | (message.data[3] << 8));
-        if (message.identifier == 0x202) {
-          soc_agente2 = soc_recibido;
-          i_converter_agente2 = corriente_recibida;
-          agente2_last_update = millis(); // Actualizar tiempo de última recepción
-        } else if (message.identifier == 0x203) {
-          soc_agente3 = soc_recibido;
-          i_converter_agente3 = corriente_recibida;
-          agente3_last_update = millis(); // Actualizar tiempo de última recepción
+            Serial.print("KP_1: "); Serial.print(KP_1);
+            Serial.print(" | KI_1: "); Serial.print(KI_1);
+            Serial.print(" | KP_2: "); Serial.print(KP_2);
+            Serial.print(" | KI_2: "); Serial.print(KI_2);
+            Serial.print(" | KP_3: "); Serial.print(KP_3);
+            Serial.print(" | KI_3: "); Serial.println(KI_3);
         }
-      }
+        vTaskDelay(pdMS_TO_TICKS(50)); // Espera 50 ms antes de revisar de nuevo
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-}
+} */
 
-void PWM_Control_Task(void *pvParameters) {
-
-  float voltaje = 0.0;
-  float corriente = 0.0;
-  float error_v = 0.0;
-  float integral_error_v = 0.0;
-  float error_i = 0.0;
-  float integral_error_i = 0.0;
-
-  bool control_enabled = true;
-  float soc_float = 0.0;
-  float error_soc = 0.0;
-  float integral_error_soc = 0.0;
-
-  unsigned long start_time = millis();
-  unsigned long end_time = 0;
-
-  int16_t raw_cell1 = 0;
-  int16_t raw_barra = 0;
-  int16_t raw_battery = 0;
-  int16_t raw_converter = 0;
-
-  bool bias_calculated = false;
-  int16_t i_battery_bias = 0;
-  int16_t i_converter_bias = 0;
-
-  while(!bias_calculated) {
-    raw_cell1 = ads1.readADC_Differential_0_3(); // Canal 0-3
-    raw_battery = ads2.readADC_Differential_0_3(); // Canal 0-3
-    raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
-
-    v_cell1_buffer[avg_index] = raw_cell1;
-    i_battery_buffer[avg_index] = raw_battery;
-    i_converter_buffer[avg_index] = raw_converter;
-    avg_index++;
-    if (avg_index >= AVG_WINDOW) {
-      avg_index = 0;
-      avg_filled = true;
-    }
-    soc_float = moving_average(v_cell1_buffer, AVG_WINDOW, avg_filled) * 1.641651 - 26000;
-    i_battery_bias = moving_average(i_battery_buffer, AVG_WINDOW, avg_filled);
-    i_converter_bias = moving_average(i_converter_buffer, AVG_WINDOW, avg_filled);
-
-    if (avg_filled){
-      bias_calculated = true;
-      avg_filled = false;
-      avg_index = 0; // Reiniciar el índice para el siguiente ciclo de promedio
-      for (int i = 0; i < AVG_WINDOW; i++) {
-        v_cell1_buffer[i] = 0;
-        i_battery_buffer[i] = 0;
-        i_converter_buffer[i] = 0;
-      }
-      Serial.println("Bias calculado: ");
-      Serial.print("i_battery_bias: ");
-      Serial.println(ads1.computeVolts(i_battery_bias) * 10); // Convertir a A
-      Serial.print("i_converter_bias: ");
-      Serial.println(ads1.computeVolts(i_battery_bias)  * 10); // Convertir a A
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(20)); // Esperar 20 ms antes de la siguiente lectura
-    };
-  };
-
-  while (true) {
-
-    start_time = millis();
-
-    // Leer voltajes de las celdas y actualizar buffers de promedio móvil
-    raw_barra = ads1.readADC_Differential_0_3(); // Canal 0-3
-    raw_cell1 = ads1.readADC_Differential_1_3(); // Canal 1-3
-    raw_battery = ads2.readADC_Differential_0_3(); // Canal 0 -3
-    raw_converter = ads2.readADC_Differential_1_3(); // Canal 1-3
-
-
-
-    v_cell1_buffer[avg_index] = raw_cell1;
-    v_barra_buffer[avg_index] = raw_barra;
-    i_battery_buffer[avg_index] = raw_battery;
-    i_converter_buffer[avg_index] = raw_converter;
-    avg_index++;
-    if (avg_index >= AVG_WINDOW) {
-      avg_index = 0;
-      avg_filled = true;
-    }
-
-    if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {          
-      v_cell1 = moving_average(v_cell1_buffer, AVG_WINDOW, avg_filled);
-      v_barra = moving_average(v_barra_buffer, AVG_WINDOW, avg_filled);
-      i_battery = moving_average(i_battery_buffer, AVG_WINDOW, avg_filled) - i_battery_bias;
-      i_converter = moving_average(i_converter_buffer, AVG_WINDOW, avg_filled) - i_converter_bias;
-      xSemaphoreGive(dataMutex);
-    }
-    soc_float += ads2.computeVolts(i_battery) / 0.103 / 18; // Actualizar SOC basado en la corriente de la batería
-    soc = (int16_t)(soc_float); // Convertir a entero y escalar a porcentaje
-    voltaje = ads1.computeVolts(v_barra) * 2; // Convertir a voltios
-    corriente = ads2.computeVolts(i_converter) / 0.103; // Convertir a amperios
-  
-
-    // Revisar SOC
-    if (soc < 0) {
-      soc = 0; // Evitar valores negativos
-    } else if (soc > 10000) {
-      soc = 10000; // Limitar a 100%
-    }
-
-    int agentes_activos = 1; // Siempre este agente está activo
-    int32_t suma_soc = soc;
-    int32_t i_converter_sum = i_converter;
-
-    if (start_time - agente2_last_update < 2000) { // 2 segundos
-        suma_soc += soc_agente2;
-        i_converter_sum += i_converter_agente2;
-        agentes_activos++;
-    }
-    if (start_time - agente3_last_update < 2000) {
-        suma_soc += soc_agente3;
-        i_converter_sum += i_converter_agente3;
-        agentes_activos++;
-    }
-
-    soc_promedio = suma_soc / agentes_activos; // Promedio de SOC de los agentes
-    i_converter_promedio = i_converter_sum / agentes_activos; // Promedio de corriente de batería
-    int16_t delta_soc = soc_promedio - soc; // Diferencia entre SOC local y promedio
-
-    if (control_enabled){
-      // --- Controlador PI ---
-      error_v = V_REF - voltaje - (delta_soc * 0.0001); // Ajustar error con delta SOC
-      integral_error_v += error_v * 0.05;
-
-      float i_ref = KP_1 * error_v + KI_1 * integral_error_v;
-
-      error_i = i_ref - i_converter_promedio; // Error de corriente
-      integral_error_i += error_i * 0.05;
-
-      float control = KP_2 * error_i + KI_2 * integral_error_i;
-      duty = constrain((int)control, DUTY_MIN, DUTY_MAX);
-
-      // Aplicar PWM
-      ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
-      ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
-
-      // Revisar SOC
-      if (abs(delta_soc) > 500) { // Si la diferencia es mayor a 5%
-        control_enabled = false; // Desactivar control si el SOC está muy desbalanceado
-        Serial.println("Control desactivado por SOC desbalanceado");
-      } else {
-        control_enabled = true; // Activar control si el SOC está balanceado
-      }
-
-      // Imprimir valores para depuración
-      Serial.print("Voltaje Barra: ");
-      Serial.print(voltaje, 2);
-      Serial.print("Voltaje Celda: ");
-      Serial.print(ads1.computeVolts(v_cell1), 2);
-      Serial.print(" V, SOC: ");
-      Serial.print(soc / 100, 3);
-      Serial.print("%, Corriente Batería: ");
-      Serial.print(ads2.computeVolts(i_battery) / 0.103, 3);
-      Serial.print("A, Corriente a Barra: ");
-      Serial.print(corriente, 3);
-      Serial.print(" A, Duty: ");
-      Serial.println(duty);
-    } else {
-      // Control por SOC;
-      error_soc = soc_promedio - soc; // Error de SOC
-      integral_error_soc += error_soc * 0.05;
-
-      float control_soc = KP_3 * error_soc + KI_3 * integral_error_soc;
-      duty = constrain((int)control_soc, DUTY_MIN, DUTY_MAX);
-
-      // Aplicar PWM
-      ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
-      ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
-
-      // Imprimir valores para depuración
-      Serial.print("Voltaje Barra: ");
-      Serial.print(voltaje, 2);
-      Serial.print("Voltaje Celda: ");
-      Serial.print(ads1.computeVolts(v_cell1), 2);
-      Serial.print(" V, SOC: ");
-      Serial.print(soc / 100, 3);
-      Serial.print("%, Corriente Batería: ");
-      Serial.print(i_battery * 0.0001875 * 10, 3);
-      Serial.print("A, Corriente a Barra: ");
-      Serial.print(corriente, 3);
-      Serial.print(" V, Duty: ");
-      Serial.println(duty);
-    }
-
-    // Actualizar tiempo
-    end_time = millis();
-    int delta = 50 + start_time - end_time;
-    vTaskDelay(pdMS_TO_TICKS(max(0, delta)));
-  }
-}
-
-void Firebase_Update_Task(void *parameter) {
-  JsonWriter writer;
-  object_t jsonData, objBarra, objCelda, objBattery, objIBarra, objSOC, objTime;
-  while(true){
-    app.loop(); // Mantener la aplicación Firebase activa
-    if (app.ready()) {
-      if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-        writer.create(objBarra, "/v_barra", ads1.computeVolts(v_barra) * 2); // Voltaje de la barra en V
-        writer.create(objCelda, "/v_celda1", ads1.computeVolts(v_cell1)); // Voltaje de la celda 1 en V
-        writer.create(objBattery, "/i_battery", ads2.computeVolts(i_battery) / 0.103); // Corriente de la batería en A
-        writer.create(objIBarra, "/i_barra", ads2.computeVolts(i_converter) / 0.103); // Corriente del convertidor en A
-        writer.create(objSOC, "/soc", soc / 100.0); // SOC en porcentaje
-        writer.create(objTime, "/time", millis() / 1000); // Tiempo en segundos
-        xSemaphoreGive(dataMutex);
-      }
-      writer.join(jsonData, 6, objBarra, objCelda, objBattery, objIBarra, objSOC, objTime);
-      Database.set<object_t>(aClient, "/Agents/1", jsonData, processData, "🔐 Firebase_Update_Task");
-      vTaskDelay(pdMS_TO_TICKS(5000)); // Actualizar cada 5 segundos
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(1000)); // Espera y reintenta si no está lista
-    }
-  }
-}
-
-void IRAM_ATTR stop_isr() {
-  static unsigned long last_interrupt = 0;
-  unsigned long now = millis();
-  if (now - last_interrupt < 200) return; // Antirrebote simple
-  last_interrupt = now;
-
-  agente_detener = !agente_detener; // Alterna el estado
-
-  if (!agente_detener) {
-    // Reactivar tareas desde ISR
-    if (handlePWM) xTaskResumeFromISR(handlePWM);
-    if (handleCAN_TX) xTaskResumeFromISR(handleCAN_TX);
-    if (handleCAN_RX) xTaskResumeFromISR(handleCAN_RX);
-  }
-}
+TaskHandle_t handlePWM = NULL;
 
 void setup() {
-  Serial.begin(115200);
+    Serial.begin(115200);
 
-  // Connect to Wi-Fi
-  initWiFi();
+    // Configurar pines de LEDs
+    setupStatusLED();
 
-  // Configure SSL client
-  ssl_client.setInsecure();
+    // Inicializar WiFi y Firebase
+    initWiFi();
+    initFirebase();
 
-  // Initialize Firebase
-  initializeApp(aClient, app, getAuth(user_auth), processData, "🔐 authTask");
-  app.getApp<RealtimeDatabase>(Database);
-  Database.url(DATABASE_URL);
+    delay(1000);
 
-  // Inicializar el bus CAN
-  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
-  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
-  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-  
-  if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK && twai_start() == ESP_OK) {
-    Serial.println("CAN inicializado correctamente.");
-  } else {
-    Serial.println("Error al iniciar CAN.");
-  }
+    // Inicializar sensores
+    initADS();
+    Serial.println("Sensores inicializados.");
 
-  Wire.begin(21, 22); // SDA = 21, SCL = 22
+    // Inicializar PWM
+    setupPWM();
 
-  // Inicializar el primer sensor ADS1115
-  while(!ads1.begin(0x48)) {
-    Serial.println("Error al inicializar el ADS1115 (0x48), reintentando...");
-    delay(1000); // Esperar 1 segundo antes de reintentar
-  }
-  ads1.setGain(GAIN_TWOTHIRDS); // Configurar rango de ±6.144V
+    // Inicializar CAN
+    initCAN(CAN_TX_PIN, CAN_RX_PIN);
+    Serial.println("CAN inicializado.");
 
-  // Inicializar el segundo sensor ADS1115
-  while(!ads2.begin(0x49)) {
-    Serial.println("Error al inicializar el ADS1115 (0x49), reintentando...");
-    delay(1000); // Esperar 1 segundo antes de reintentar
-  }
-  ads2.setGain(GAIN_TWOTHIRDS); // Configurar rango de ±6.144V
+    // Inicializar BMS (ventilador, protecciones, etc.)
+    initBMS();
 
-  Serial.println("Sensores ADS1115 inicializados correctamente.");
+    // Crear Mutex global (solo una vez)
+    dataMutex = xSemaphoreCreateMutex();
 
-  setupPWM();
+    // Iniciar tareas CAN
+    startCANTasks(local_agent_id);
 
-  // Crear Mutex
-  dataMutex = xSemaphoreCreateMutex();
+    // Tarea Firebase (puedes usar local_agent_id como número de agente)
+    xTaskCreatePinnedToCore(Firebase_Update_Task, "Firebase_Update", 8192, NULL, 1, NULL, 0);
 
-  pinMode(GPIO_STOP_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(GPIO_STOP_PIN), stop_isr, FALLING);
+    // Crear tarea de control PWM
+    xTaskCreatePinnedToCore(PWM_Control_Task, "PWM_Control", 4096, NULL, 1, &handlePWM, 1);
 
-  // Crear tareas y guardar los handles
-  xTaskCreatePinnedToCore(PWM_Control_Task, "PWM_Control", 4096, NULL, 1, &handlePWM, 1);
-  xTaskCreatePinnedToCore(CAN_TX_Task, "CAN_TX", 2048, NULL, 2, &handleCAN_TX, 1);
-  xTaskCreatePinnedToCore(CAN_RX_Task, "CAN_RX", 2048, NULL, 2, &handleCAN_RX, 1);
-  xTaskCreatePinnedToCore(Firebase_Update_Task, "Firebase_Update", 8192, NULL, 1, NULL, 0); // Núcleo 0
+    // Crear tarea para el ventilador del BMS
+    xTaskCreatePinnedToCore(BMS_Fan_Task, "BMS_Fan", 2048, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(BMS_State_Task, "BMS_State", 2048, NULL, 1, NULL, 1);
+
 }
 
 void loop() {
-  // El loop principal queda vacío, ya que las tareas manejan la lógica
-}
-
-// --- Configuración PWM ---
-void setupPWM() {
-  ledc_timer_config_t timerConfig = {
-    .speed_mode = LEDC_HIGH_SPEED_MODE,
-    .duty_resolution = PWM_RESOLUTION,
-    .timer_num = PWM_TIMER,
-    .freq_hz = freq,
-    .clk_cfg = LEDC_AUTO_CLK
-  };
-  ledc_timer_config(&timerConfig);
-
-  ledc_channel_config_t channelConfig = {
-    .gpio_num = PWM_PIN,
-    .speed_mode = LEDC_HIGH_SPEED_MODE,
-    .channel = PWM_CHANNEL,
-    .timer_sel = PWM_TIMER,
-    .duty = duty,
-    .hpoint = 0
-  };
-  ledc_channel_config(&channelConfig);
-}
-
-// Wi-Fi initialization
-void initWiFi() {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(300);
-  }
-  Serial.println(" connected.");
-}
-
-// Callback to handle Firebase responses
-void processData(AsyncResult &aResult) {
-  if (!aResult.isResult())
-    return;
-
-  if (aResult.isEvent())
-    Firebase.printf("Event task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.eventLog().message().c_str(), aResult.eventLog().code());
-
-  if (aResult.isDebug())
-    Firebase.printf("Debug task: %s, msg: %s\n", aResult.uid().c_str(), aResult.debug().c_str());
-
-  if (aResult.isError())
-    Firebase.printf("Error task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.error().message().c_str(), aResult.error().code());
-
-  if (aResult.available())
-    Firebase.printf("task: %s, payload: %s\n", aResult.uid().c_str(), aResult.c_str());
+    vTaskDelay(pdMS_TO_TICKS(50)); // No bloquea FreeRTOS, solo revisa cada 50 ms
 }

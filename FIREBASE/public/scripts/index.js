@@ -15,7 +15,8 @@ const firebaseConfig = {
 console.log("Inicializando Firebase...");
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
-const agentsRef = ref(db, 'Agents');
+const agentsRef = ref(db, "/");
+
 
 // Referencia al contenedor dinámico
 const agentContainer = document.getElementById('content-sign-in');
@@ -33,7 +34,7 @@ if (typeof Chart === "undefined") {
 
 // --- Configuración de buffers para los últimos 60 datos ---
 const MAX_POINTS = 60;
-const agentIds = ["1", "2", "3"];
+const agentIds = ["201", "202", "203"];
 const barraData = {};
 const celda1Data = {};
 const timeData = {}; // Nuevo: buffer de tiempo por agente
@@ -207,69 +208,78 @@ onValue(agentsRef, (snapshot) => {
   }
 
   let shouldUpdate = false;
+  const agentes = [201, 202, 203];
 
-  Object.keys(data).forEach(id => {
-    const agent = data[id];
+  agentes.forEach((id, idx) => {
+    const v_barra   = (data[`${id}_v_barra`]   ?? 0) * 0.0001875 * 2;
+    const v_celda1  = (data[`${id}_v_celda1`]  ?? 0) * 0.0001875;
+    const i_battery = (data[`${id}_i_battery`] ?? 0) * 0.0001875 / 0.103;
+    const i_barra   = (data[`${id}_i_barra`]   ?? 0) * 0.0001875 / 0.103;
+    const soc       = (data[`${id}_soc`]       ?? 0) / 100;
+    const time      =  data[`${id}_time`]      ?? 0;
 
-    document.getElementById(`v_barra-${id}`).innerText = agent.v_barra?.toFixed(2) ?? '-';
-    document.getElementById(`v_celda1-${id}`).innerText = agent.v_celda1?.toFixed(2) ?? '-';
-    document.getElementById(`i_battery-${id}`).innerText = agent.i_battery?.toFixed(2) ?? '-';
-    document.getElementById(`i_barra-${id}`).innerText = agent.i_barra?.toFixed(2) ?? '-';
-    document.getElementById(`soc-${id}`).innerText = agent.soc?.toFixed(2) ?? '-';
+    // Actualizar HTML
+    document.getElementById(`v_barra-${id}`).innerText = v_barra.toFixed(2);
+    document.getElementById(`v_celda1-${id}`).innerText = v_celda1.toFixed(2);
+    document.getElementById(`i_battery-${id}`).innerText = i_battery.toFixed(2);
+    document.getElementById(`i_barra-${id}`).innerText = i_barra.toFixed(2);
+    document.getElementById(`soc-${id}`).innerText = soc.toFixed(2);
 
-    // --- Actualizar buffers de datos para gráficos globales ---
-    if (typeof agent.time !== "undefined") {
-      if (lastTime[id] !== agent.time) {
+    // Actualizar buffers si cambió el tiempo
+    if (typeof time !== "undefined") {
+      if (lastTime[id] !== time) {
         shouldUpdate = true;
-        lastTime[id] = agent.time;
-        // Solo agrega si cambia el tiempo
+        lastTime[id] = time;
+
         if (barraData[id]) {
-          barraData[id].push(agent.v_barra);
+          barraData[id].push(v_barra);
           if (barraData[id].length > MAX_POINTS) barraData[id].shift();
         }
         if (celda1Data[id]) {
-          celda1Data[id].push(agent.v_celda1);
+          celda1Data[id].push(v_celda1);
           if (celda1Data[id].length > MAX_POINTS) celda1Data[id].shift();
         }
         if (socData[id]) {
-          socData[id].push(agent.soc * 100); // Si soc está en 0-1
+          socData[id].push(soc);
           if (socData[id].length > MAX_POINTS) socData[id].shift();
         }
         if (iBatteryData[id]) {
-          iBatteryData[id].push(agent.i_battery);
+          iBatteryData[id].push(i_battery);
           if (iBatteryData[id].length > MAX_POINTS) iBatteryData[id].shift();
         }
         if (iBarraData[id]) {
-          iBarraData[id].push(agent.i_barra);
+          iBarraData[id].push(i_barra);
           if (iBarraData[id].length > MAX_POINTS) iBarraData[id].shift();
         }
         if (timeData[id]) {
-          timeData[id].push(agent.time);
+          timeData[id].push(time);
           if (timeData[id].length > MAX_POINTS) timeData[id].shift();
         }
       }
     }
   });
 
-  // --- Actualizar los gráficos solo si cambia el tiempo ---
+  // Actualizar gráficos
   if (shouldUpdate && chartBarra && chartCelda1 && chartSOC && chartIBattery && chartIBarra) {
-    // Para el eje X, usar el tiempo del primer agente (o el más largo)
     let mainTime = [];
-    agentIds.forEach(id => {
+    agentes.forEach(id => {
       if (timeData[id].length > mainTime.length) mainTime = timeData[id];
     });
+
     chartBarra.data.labels = mainTime;
     chartCelda1.data.labels = mainTime;
     chartSOC.data.labels = mainTime;
     chartIBattery.data.labels = mainTime;
     chartIBarra.data.labels = mainTime;
-    agentIds.forEach((id, idx) => {
+
+    agentes.forEach((id, idx) => {
       chartBarra.data.datasets[idx].data = barraData[id];
       chartCelda1.data.datasets[idx].data = celda1Data[id];
       chartSOC.data.datasets[idx].data = socData[id];
       chartIBattery.data.datasets[idx].data = iBatteryData[id];
       chartIBarra.data.datasets[idx].data = iBarraData[id];
     });
+
     chartBarra.update('none');
     chartCelda1.update('none');
     chartSOC.update('none');

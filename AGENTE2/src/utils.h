@@ -11,10 +11,9 @@
 #include <driver/ledc.h>
 
 // --- Parámetros generales ---
-#define CAN_TX_PIN GPIO_NUM_4
 #define MAX_AGENTS 204
 #define AGENTE_LOCAL 202
-#define AVG_WINDOW 80
+#define AVG_WINDOW 10
 
 // Pines para CAN y botón de parada
 #define CAN_TX_PIN GPIO_NUM_4
@@ -76,7 +75,7 @@ extern RealtimeDatabase Database;
 #define V_REF             5.0
 
 // Configuración del pin PWM para el ventilador
-#define FAN_PWM_PIN      12
+#define FAN_PWM_PIN      32
 #define FAN_PWM_CHANNEL  LEDC_CHANNEL_1
 #define FAN_PWM_TIMER    LEDC_TIMER_1
 #define FAN_PWM_FREQ     20000
@@ -100,7 +99,7 @@ extern RealtimeDatabase Database;
 
 // Pines LED RGB
 #define LED_R_PIN 14
-#define LED_G_PIN 32
+#define LED_G_PIN 12
 #define LED_B_PIN 33
 
 // PWM para colores (cátodo común, brillo proporcional al duty)

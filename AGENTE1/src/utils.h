@@ -11,10 +11,9 @@
 #include <driver/ledc.h>
 
 // --- Parámetros generales ---
-#define CAN_TX_PIN GPIO_NUM_4
 #define MAX_AGENTS 204
 #define AGENTE_LOCAL 201
-#define AVG_WINDOW 80
+#define AVG_WINDOW 10
 
 // Pines para CAN y botón de parada
 #define CAN_TX_PIN GPIO_NUM_4

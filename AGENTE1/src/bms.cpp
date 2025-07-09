@@ -85,8 +85,8 @@ void BMS_State_Task(void *pvParameters) {
                     Serial.println("[BMS] Estado: SOBREDESCARGA");
                 } else if (soc_local > SOC_MAX) {
                     // SOC local alto: proteger carga
+                    digitalWrite(RELAY_PIN, LOW);      // Desconectar relé
                     digitalWrite(TRANSISTOR_PIN, LOW);  // Encender transistor
-                    digitalWrite(RELAY_PIN, HIGH);      // Desconectar relé
                     bms_state = BMS_SOBRECARGA;
                     Serial.println("[BMS] Estado: SOBRECARGA");
                 } else if (fabs(i_converter_local) > I_MAX) {
@@ -100,24 +100,24 @@ void BMS_State_Task(void *pvParameters) {
                     // Estado normal
                     digitalWrite(RELAY_PIN, LOW);
                     digitalWrite(TRANSISTOR_PIN, HIGH);
-                } break;
-
+                }
+                break;
             case BMS_SOBREDESCARGA:
                 if (soc_prom > SOC_MIN + 200) {
                     digitalWrite(RELAY_PIN, LOW);
                     digitalWrite(TRANSISTOR_PIN, HIGH);
                     bms_state = BMS_NORMAL;
                     Serial.println("[BMS] Estado: NORMAL desde SOBREDESCARGA");
-                } break;
-
+                }
+                break;
             case BMS_SOBRECARGA:
                 if (soc_local < SOC_MAX - 200) {
                     digitalWrite(TRANSISTOR_PIN, HIGH);
                     digitalWrite(RELAY_PIN, LOW);
                     bms_state = BMS_NORMAL;
                     Serial.println("[BMS] Estado: NORMAL desde SOBRECARGA");
-                } break;
-
+                }
+                break;
             case BMS_SOBRECORRIENTE:
                 // Apaga el sistema definitivamente
                 digitalWrite(RELAY_PIN, HIGH);
@@ -128,7 +128,8 @@ void BMS_State_Task(void *pvParameters) {
                 if (handlePWM != NULL) {
                     vTaskSuspend(handlePWM);
                     Serial.println("[BMS] Control detenido por sobrecorriente");
-                } break;
+                }
+                break;
             }
         vTaskDelay(pdMS_TO_TICKS(500));
     }

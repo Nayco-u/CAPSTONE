@@ -119,7 +119,7 @@ void PWM_Control_Task(void *pvParameters) {
       uint8_t state = map(soc_local, 0, 10000, 255, 0);
       setLEDColor(255 - state, state, 255); // Rojo para indicar carga
 
-      Serial.print("\r[CONTROL] V_barra: ");
+      /* Serial.print("\r[CONTROL] V_barra: ");
       Serial.print(voltaje, 3);
       Serial.print(" | I_converter: ");
       Serial.print(ads2.computeVolts(i_battery_local), 3);
@@ -133,7 +133,7 @@ void PWM_Control_Task(void *pvParameters) {
       Serial.print(integral_error_i, 3);
       Serial.print(" | Duty: ");
       Serial.print(duty);
-      Serial.print("      "); // limpia la línea si hay restos de impresiones anteriores
+      Serial.print("      "); // limpia la línea si hay restos de impresiones anteriores */
 
       if (abs(delta_soc) > 500) control_enabled = false;
     } else {

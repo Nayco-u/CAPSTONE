@@ -5,13 +5,17 @@
 #include <Arduino.h>
 #include "utils.h"
 
+#define I_MAX  380
+
 // Estados del BMS
 typedef enum {
     BMS_NORMAL,
     BMS_SOBREDESCARGA,
-    BMS_SOBRECARGA
+    BMS_SOBRECARGA,
+    BMS_SOBRECORRIENTE,
+    BMS_BALANCEO_CELDA_1,
+    BMS_BALANCEO_CELDA_2
 } BMSState;
-
 // Inicialización del BMS (PWM ventilador, pines de protección, etc.)
 void initBMS();
 

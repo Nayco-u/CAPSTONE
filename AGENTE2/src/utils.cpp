@@ -8,7 +8,7 @@ uint16_t local_agent_id = AGENTE_LOCAL;
 AgentData agentes_data[MAX_AGENTS] = {};
 SemaphoreHandle_t dataMutex = nullptr;
 float soc_promedio = 0.0;
-uint8_t known_agents[] = {202, 203};
+uint8_t known_agents[] = {201, 203};
 const size_t NUM_AGENTS = sizeof(known_agents) / sizeof(known_agents[0]);
 
 // --- Firebase ---

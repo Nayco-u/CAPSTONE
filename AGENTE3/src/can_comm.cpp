@@ -32,6 +32,9 @@ void CAN_TX_Task(void *pvParameters) {
       xSemaphoreGive(dataMutex);
     }
     twai_transmit(&message, pdMS_TO_TICKS(10));
+    /* Serial.print("[CAN_TX] ID: "); Serial.print(message.identifier);
+    Serial.print(" | SOC: "); Serial.print(agentes_data[local_agent_id].soc);
+    Serial.print(" | I_converter: "); Serial.println(agentes_data[local_agent_id].i_converter); */
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -52,6 +55,11 @@ void CAN_RX_Task(void *pvParameters) {
               agentes_data[message.identifier].i_converter = curr_recv;
               agentes_data[message.identifier].last_update = millis();
               xSemaphoreGive(dataMutex);
+
+              // --- Print de depuración ---
+              /* Serial.print("[CAN_RX] ID: "); Serial.print(message.identifier);
+              Serial.print(" | SOC: "); Serial.print(soc_recv);
+              Serial.print(" | I_converter: "); Serial.println(curr_recv); */
             }
           }
         }

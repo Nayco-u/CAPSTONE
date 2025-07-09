@@ -32,20 +32,17 @@ void PWM_Control_Task(void *pvParameters) {
   float integral_error_soc = 0.0;
   bool control_enabled = true;
 
-  // SOC inicial
-  float v_celda = agentes_data[local_agent_id].v_cell1 * 0.0001875;
-  float soc_init;
-  if (v_celda <= 3.2) {
-    soc_init = 0.2 * (v_celda - 3.0) / 0.2;
-  } else if (v_celda <= 4.0) {
-    soc_init = 0.2 + 0.7 * (v_celda - 3.2) / 0.8;
-  } else {
-    soc_init = 0.9 + 0.1 * (v_celda - 4.0) / 0.2;
-  }
-  soc_init = constrain(soc_init, 0.0, 1.0);
-  agentes_data[local_agent_id].soc = soc_init * 10000;
+  // Esperar a que el buffer de promedios esté lleno (si usas avg_filled)
+  // extern bool avg_filled;
+  // while (!avg_filled) { leerSensores(); vTaskDelay(pdMS_TO_TICKS(20)); }
+
+  // SOC inicial usando la función de utils
+  float v_celda = ads1.computeVolts(agentes_data[local_agent_id].v_cell1);
+  agentes_data[local_agent_id].soc = soc_from_voltage(v_celda);
   Serial.print("SOC inicial estimado: ");
   Serial.println(agentes_data[local_agent_id].soc / 100.0);
+
+  calibrarBias(); // Asegúrate de que el bias esté calibrado antes de iniciar el control
 
   unsigned long start_time = millis();
   unsigned long end_time = 0;
@@ -56,14 +53,13 @@ void PWM_Control_Task(void *pvParameters) {
     leerSensores();
 
     // --- Sección crítica: solo para modificar/agregar datos compartidos ---
-    float i_batt_A, soc_float;
     int16_t soc_local, i_converter_local, v_barra_local, v_cell1_local, i_battery_local;
     unsigned long now;
     {
       if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-        i_batt_A = agentes_data[local_agent_id].i_battery * 0.0001875 * 10.0;
-        soc_float = agentes_data[local_agent_id].soc + ((i_batt_A * 0.05) / (5000.0 / 1000.0 * 3600.0)) * 10000.0;
-        agentes_data[local_agent_id].soc = constrain((int16_t)soc_float, 0, 10000);
+        // Calcula el SOC en base al voltaje de celda en cada ciclo
+        float v_celda_actual = ads1.computeVolts(agentes_data[local_agent_id].v_cell1);
+        agentes_data[local_agent_id].soc = soc_from_voltage(v_celda_actual);
         agentes_data[local_agent_id].last_update = millis();
 
         // Copia local de variables necesarias para el control
@@ -103,21 +99,41 @@ void PWM_Control_Task(void *pvParameters) {
     int16_t delta_soc = soc_promedio - soc_local;
 
     // --- Cálculo del control y PWM fuera de la sección crítica ---
-    voltaje = v_barra_local * 0.0001875 * 2;
-    corriente = i_converter_local * 0.0001875 * 10.0;
+    voltaje = ads1.computeVolts(v_barra_local) * 2;
+    corriente = ads2.computeVolts(i_converter_local) / 0.103;
 
     if (control_enabled) {
-      error_v = V_REF - voltaje - (delta_soc * 0.0001);
+      error_v = V_REF - voltaje;
       integral_error_v += error_v * 0.05;
       float i_ref = KP_1 * error_v + KI_1 * integral_error_v;
 
-      error_i = i_ref - corriente;
+      error_i = i_ref - ads2.computeVolts(i_converter_promedio) / 0.103;
       integral_error_i += error_i * 0.05;
       float control = KP_2 * error_i + KI_2 * integral_error_i;
 
       int duty = constrain((int)control, DUTY_MIN, DUTY_MAX);
       ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
       ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
+
+
+      uint8_t state = map(soc_local, 0, 10000, 255, 0);
+      setLEDColor(255 - state, state, 255); // Rojo para indicar carga
+
+      Serial.print("\r[CONTROL] V_barra: ");
+      Serial.print(voltaje, 3);
+      Serial.print(" | I_converter: ");
+      Serial.print(ads2.computeVolts(i_battery_local), 3);
+      Serial.print(" | Error_V: ");
+      Serial.print(error_v, 3);
+      Serial.print(" | Integral_V: ");
+      Serial.print(integral_error_v, 3);
+      Serial.print(" | Error_I: ");
+      Serial.print(error_i, 3);
+      Serial.print(" | Integral_I: ");
+      Serial.print(integral_error_i, 3);
+      Serial.print(" | Duty: ");
+      Serial.print(duty);
+      Serial.print("      "); // limpia la línea si hay restos de impresiones anteriores
 
       if (abs(delta_soc) > 500) control_enabled = false;
     } else {
@@ -127,6 +143,15 @@ void PWM_Control_Task(void *pvParameters) {
       int duty = constrain((int)control_soc, DUTY_MIN, DUTY_MAX);
       ledc_set_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL, duty);
       ledc_update_duty(LEDC_HIGH_SPEED_MODE, PWM_CHANNEL);
+      
+      uint8_t state = map(soc_local, 0, 10000, 255, 0);
+      setLEDColor(255 - state, state, 255); // Rojo para indicar
+
+      if (abs(delta_soc) < 100) {
+        control_enabled = true;
+        integral_error_v = 0.0; // Reiniciar integral al reactivar control
+        integral_error_i = 0.0; // Reiniciar integral al reactivar control
+      }
     }
 
     end_time = millis();

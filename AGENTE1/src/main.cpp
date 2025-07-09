@@ -62,7 +62,7 @@ void setup() {
     dataMutex = xSemaphoreCreateMutex();
 
     // Iniciar tareas CAN
-    startCANTasks(local_agent_id);
+    startCANMaster(AGENTE_LOCAL); // Cambia a startCANSlave si es esclavo
 
     // Tarea Firebase (puedes usar local_agent_id como número de agente)
     xTaskCreatePinnedToCore(Firebase_Update_Task, "Firebase_Update", 8192, NULL, 1, NULL, 0);
